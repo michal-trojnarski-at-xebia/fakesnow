@@ -84,6 +84,11 @@ def test_qualified_temporary_table(cur: snowflake.connector.cursor.SnowflakeCurs
     assert cur.fetchall() == [("Table TT successfully created.",)]
 
 
+def test_qualified_temporary_table_in_missing_schema(cur: snowflake.connector.cursor.SnowflakeCursor):
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="does not exist or not authorized"):
+        cur.execute("create temporary table db1.missing_schema.tt (a int)")
+
+
 def test_qualified_temporary_table_insert(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute('create or replace temporary table "DB1"."SCHEMA1"."TT" as select 1 as a')
     cur.execute("insert into db1.schema1.tt values (2)")

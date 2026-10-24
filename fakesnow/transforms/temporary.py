@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import snowflake.connector.errors
+from duckdb import DuckDBPyConnection
 from sqlglot import Expr, exp
 
 from fakesnow.temporary import TemporaryObjects
+
+_SCHEMA_EXISTS_SQL = """
+    SELECT 1 FROM information_schema.schemata WHERE upper(catalog_name) = upper(?) AND upper(schema_name) = upper(?)
+"""
 
 
 def temporary_objects(
@@ -10,6 +16,7 @@ def temporary_objects(
     temporaries: TemporaryObjects,
     current_database: str | None,
     current_schema: str | None,
+    duck_conn: DuckDBPyConnection,
 ) -> Expr:
     """Place temporary tables and views in DuckDB's temp.main, and resolve qualified references to them.
 
@@ -29,6 +36,13 @@ def temporary_objects(
         and (table := expression.find(exp.Table))
     ):
         owner = (table.catalog or current_database, table.db or current_schema)
+        if not duck_conn.execute(_SCHEMA_EXISTS_SQL, list(owner)).fetchone():
+            # DuckDB would create it in temp.main whether or not its schema exists
+            raise snowflake.connector.errors.ProgrammingError(
+                msg=f"SQL compilation error:\nSchema '{owner[0]}.{owner[1]}' does not exist or not authorized.",
+                errno=2003,
+                sqlstate="02000",
+            )
         if (existing := temporaries.owner(table.name)) and existing != owner:
             # DuckDB names temporary objects without their schema, so this one would replace or clash with the other
             raise NotImplementedError("Temporary objects with the same name in different schemas")

@@ -308,7 +308,7 @@ class FakeSnowflakeCursor:
             .transform(transforms.upper_case_unquoted_identifiers, copy=False)
             .transform(
                 lambda e: transforms.temporary_objects(
-                    e, self._conn.temporaries, self._conn.database, self._conn.schema
+                    e, self._conn.temporaries, self._conn.database, self._conn.schema, self._duck_conn
                 ),
                 copy=False,
             )

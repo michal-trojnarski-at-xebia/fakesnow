@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from typing import Literal
 
+import snowflake.connector.errors
 import sqlglot
+from duckdb import DuckDBPyConnection
 from sqlglot import Expr, TokenType, exp
+
+from fakesnow.expr import normalise_ident
 
 
 def fs_global_creation_sql() -> str:
@@ -321,6 +325,84 @@ SELECT
     '' as 'external_access_integrations',
 WHERE 0 = 1;
 """
+
+
+def show_grants(
+    expression: Expr,
+    current_database: str | None,
+    current_schema: str | None,
+    role: str,
+    duck_conn: DuckDBPyConnection,
+) -> Expr:
+    """Transform SHOW GRANTS ON <kind> <name>.
+
+    Grants aren't tracked, so only the implicit OWNERSHIP grant held by the session role is reported.
+
+    See https://docs.snowflake.com/en/sql-reference/sql/show-grants
+    """
+    if not (
+        isinstance(expression, exp.Command)
+        and isinstance(expression.this, str)
+        and expression.this.upper() == "SHOW"
+        and isinstance(expression.expression, str)
+    ):
+        return expression
+
+    text = expression.expression
+    tokens = sqlglot.tokenize(text, read="snowflake")
+    if not tokens or tokens[0].token_type != TokenType.VAR or tokens[0].text.upper() != "GRANTS":
+        return expression
+
+    kind = tokens[2].text.upper() if len(tokens) > 3 and tokens[1].token_type == TokenType.ON else ""
+    if kind not in ("TABLE", "VIEW", "SCHEMA", "DATABASE"):
+        raise NotImplementedError(expression.sql(dialect="snowflake"))
+
+    # parse the name from the original text so quoting is preserved
+    table = exp.to_table(text[tokens[3].start :], dialect="snowflake")
+    parts = [normalise_ident(p.sql(dialect="snowflake")) for p in reversed(table.parts)]
+    if len(parts) > {"TABLE": 3, "VIEW": 3, "SCHEMA": 2, "DATABASE": 1}[kind]:
+        raise NotImplementedError(expression.sql(dialect="snowflake"))
+
+    # fill in unqualified leading parts from the session
+    session = [normalise_ident(d) if d else None for d in (current_database, current_schema)]
+    qualifiers = session[: {"TABLE": 2, "VIEW": 2, "SCHEMA": 1, "DATABASE": 0}[kind]]
+    leading = qualifiers[: len(qualifiers) + 1 - len(parts)]
+    if not all(leading):
+        raise NotImplementedError(expression.sql(dialect="snowflake"))
+    names = [q for q in leading if q] + parts[::-1]
+
+    if kind == "DATABASE":
+        exists_sql = "SELECT 1 FROM _fs_global._fs_information_schema._fs_show_databases WHERE name = ?"
+    elif kind == "SCHEMA":
+        exists_sql = (
+            "SELECT 1 FROM _fs_global._fs_information_schema._fs_show_schemas WHERE database_name = ? AND name = ?"
+        )
+    else:
+        exists_sql = (
+            "SELECT 1 FROM _fs_global._fs_information_schema._fs_show_objects "
+            f"WHERE database_name = ? AND schema_name = ? AND name = ? AND kind = '{kind}'"
+        )
+    if duck_conn.execute(exists_sql, names).fetchone() is None:
+        fqname = ".".join(names)
+        raise snowflake.connector.errors.ProgrammingError(
+            msg=f"SQL compilation error:\n{kind.capitalize()} '{fqname}' does not exist or not authorized.",
+            errno=2003,
+            sqlstate="02000",
+        )
+
+    # the catalog doesn't record creation time, so report the current time
+    query = f"""
+        SELECT
+            now()::timestamptz AS created_on,
+            'OWNERSHIP' AS privilege,
+            '{kind}' AS granted_on,
+            {exp.Literal.string(".".join(names)).sql(dialect="duckdb")} AS name,
+            'ROLE' AS granted_to,
+            {exp.Literal.string(role).sql(dialect="duckdb")} AS grantee_name,
+            'true' AS grant_option,
+            {exp.Literal.string(role).sql(dialect="duckdb")} AS granted_by
+    """
+    return sqlglot.parse_one(query, read="duckdb")
 
 
 def show_parameters(expression: Expr, query_tag: str = "") -> Expr:

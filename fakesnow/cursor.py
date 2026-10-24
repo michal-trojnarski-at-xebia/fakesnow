@@ -362,6 +362,13 @@ class FakeSnowflakeCursor:
             .transform(transforms.datediff_string_literal_timestamp_cast, copy=False)
             .transform(transforms.show_databases, copy=False)
             .transform(transforms.show_functions, copy=False)
+            .transform(
+                lambda e: transforms.show_grants(
+                    e, self._conn.database, self._conn.schema, self._conn.role, self._duck_conn
+                ),
+                copy=False,
+            )
+            .transform(transforms.grant_revoke, copy=False)
             .transform(transforms.show_procedures, copy=False)
             .transform(lambda e: transforms.show_parameters(e, self._conn.query_tag), copy=False)
             .transform(transforms.show_warehouses, copy=False)

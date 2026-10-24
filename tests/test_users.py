@@ -17,3 +17,15 @@ def test_show_users_with_users(cur: snowflake.connector.cursor.SnowflakeCursor):
     rows = result.fetchall()
     names = [row[0] for row in rows]
     assert names == ["foo", "bar"]
+
+
+def test_grant_is_accepted(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table t1 (id int)")
+    cur.execute("grant select on table db1.schema1.t1 to role reporter")
+    assert cur.fetchall() == [("Statement executed successfully.",)]
+
+
+def test_revoke_is_accepted(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table t1 (id int)")
+    cur.execute("revoke select on table db1.schema1.t1 from role reporter")
+    assert cur.fetchall() == [("Statement executed successfully.",)]

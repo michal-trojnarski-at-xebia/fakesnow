@@ -7,6 +7,8 @@ from typing import cast
 import pytest
 import pytz
 import snowflake.connector.cursor
+import snowflake.connector.errors
+from dirty_equals import IsDatetime
 
 
 def test_show_columns(dcur: snowflake.connector.cursor.SnowflakeCursor):
@@ -740,3 +742,62 @@ def test_query_tag_unset_restores_default(dcur: snowflake.connector.cursor.Snowf
     dcur.execute("ALTER SESSION UNSET QUERY_TAG")
     dcur.execute("SHOW PARAMETERS LIKE 'QUERY_TAG'")
     assert dcur.fetchall() == [QUERY_TAG_PARAMETER]
+
+
+def _ownership(granted_on: str, name: str, role: str = "PUBLIC") -> dict:
+    return {
+        "created_on": IsDatetime(),
+        "privilege": "OWNERSHIP",
+        "granted_on": granted_on,
+        "name": name,
+        "granted_to": "ROLE",
+        "grantee_name": role,
+        "grant_option": "true",
+        "granted_by": role,
+    }
+
+
+def test_show_grants_on_table_returns_ownership(dcur: snowflake.connector.cursor.DictCursor):
+    dcur.execute("create table t1 (id int)")
+    dcur.execute("show grants on table db1.schema1.t1")
+    assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.T1")]
+
+
+def test_show_grants_on_view_returns_ownership(dcur: snowflake.connector.cursor.DictCursor):
+    dcur.execute("create table t1 (id int)")
+    dcur.execute("create view v1 as select id from t1")
+    dcur.execute("show grants on view db1.schema1.v1")
+    assert dcur.fetchall() == [_ownership("VIEW", "DB1.SCHEMA1.V1")]
+
+
+def test_show_grants_on_schema_returns_ownership(dcur: snowflake.connector.cursor.DictCursor):
+    dcur.execute("show grants on schema db1.schema1")
+    assert dcur.fetchall() == [_ownership("SCHEMA", "DB1.SCHEMA1")]
+
+
+def test_show_grants_on_database_returns_ownership(dcur: snowflake.connector.cursor.DictCursor):
+    dcur.execute("show grants on database db1")
+    assert dcur.fetchall() == [_ownership("DATABASE", "DB1")]
+
+
+def test_show_grants_resolves_unqualified_name(dcur: snowflake.connector.cursor.DictCursor):
+    dcur.execute("create table t1 (id int)")
+    dcur.execute("show grants on table t1")
+    assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.T1")]
+
+
+def test_show_grants_reports_session_role(dcur: snowflake.connector.cursor.DictCursor):
+    dcur.execute("create table t1 (id int)")
+    dcur.execute("use role transformer")
+    dcur.execute("show grants on table db1.schema1.t1")
+    assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.T1", role="TRANSFORMER")]
+
+
+def test_show_grants_on_missing_table(dcur: snowflake.connector.cursor.DictCursor):
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="does not exist or not authorized"):
+        dcur.execute("show grants on table db1.schema1.nope")
+
+
+def test_show_grants_to_role_not_implemented(dcur: snowflake.connector.cursor.DictCursor):
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="not implemented"):
+        dcur.execute("show grants to role reporter")

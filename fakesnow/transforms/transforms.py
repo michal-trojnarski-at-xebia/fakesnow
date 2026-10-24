@@ -643,6 +643,17 @@ def hex_string(expression: Expr) -> Expr:
     return expression
 
 
+def grant_revoke(expression: Expr) -> Expr:
+    """Accept GRANT and REVOKE as no-ops, since privileges aren't enforced.
+
+    See https://docs.snowflake.com/en/sql-reference/sql/grant-privilege
+    """
+    if isinstance(expression, (exp.Grant, exp.Revoke)):
+        return SUCCESS_NOP.copy()
+
+    return expression
+
+
 def haversine(expression: Expr) -> Expr:
     """Transform HAVERSINE to the _fs_haversine macro.
 

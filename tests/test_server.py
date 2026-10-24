@@ -5,6 +5,7 @@ import os
 import tempfile
 import uuid
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ from dirty_equals import IsDatetime, IsInt, IsStr, IsUUID
 from pandas.testing import assert_frame_equal
 from snowflake.connector.cursor import ResultMetadata
 
+import fakesnow
 from tests.utils import indent
 
 
@@ -813,3 +815,58 @@ def test_server_describe_only(server: dict) -> None:
         # nothing ran: the original table is untouched
         cur.execute("select * from example")
         assert cur.fetchall() == [(1, "old")]
+
+
+def test_db_path_sessions_share_instance(server: dict, tmp_path: Path) -> None:
+    params = server["session_parameters"] | {"FAKESNOW_DB_PATH": str(tmp_path)}
+    with (
+        snowflake.connector.connect(**(server | {"session_parameters": params}), database="db1", schema="s1") as c1,
+        snowflake.connector.connect(**(server | {"session_parameters": params}), database="db1", schema="s1") as c2,
+    ):
+        c1.cursor().execute("create table t (id int)")
+        c1.cursor().execute("insert into t values (1)")
+        cur = c2.cursor()
+        cur.execute("select id from t")
+        assert cur.fetchall() == [(1,)]
+
+
+def test_db_path_sessions_share_instance_across_path_spellings(server: dict, tmp_path: Path) -> None:
+    # same directory, spelled with a trailing slash and a "." segment
+    p1 = server["session_parameters"] | {"FAKESNOW_DB_PATH": str(tmp_path)}
+    p2 = server["session_parameters"] | {"FAKESNOW_DB_PATH": f"{tmp_path}/./"}
+    with (
+        snowflake.connector.connect(**(server | {"session_parameters": p1}), database="db1", schema="s1") as c1,
+        snowflake.connector.connect(**(server | {"session_parameters": p2}), database="db1", schema="s1") as c2,
+    ):
+        c1.cursor().execute("create table t (id int)")
+        cur = c2.cursor()
+        cur.execute("select count(*) from t")
+        assert cur.fetchall() == [(0,)]
+
+
+def test_isolated_sessions_do_not_share(server: dict) -> None:
+    params = server["session_parameters"] | {"FAKESNOW_DB_PATH": ":isolated:"}
+    with (
+        snowflake.connector.connect(**(server | {"session_parameters": params}), database="db1", schema="s1") as c1,
+        snowflake.connector.connect(**(server | {"session_parameters": params}), database="db1", schema="s1") as c2,
+    ):
+        c1.cursor().execute("create table t (id int)")
+        with pytest.raises(snowflake.connector.errors.ProgrammingError, match="does not exist"):
+            c2.cursor().execute("select * from t")
+
+
+def test_server_default_db_path_persists(tmp_path: Path) -> None:
+    for _ in range(2):
+        with (
+            fakesnow.server(db_path=str(tmp_path)) as kwargs,
+            snowflake.connector.connect(**kwargs, database="db1", schema="s1") as conn,
+        ):
+            conn.cursor().execute("create table if not exists t (id int)")
+            conn.cursor().execute("insert into t values (1)")
+    with (
+        fakesnow.server(db_path=str(tmp_path)) as kwargs,
+        snowflake.connector.connect(**kwargs, database="db1", schema="s1") as conn,
+    ):
+        cur = conn.cursor()
+        cur.execute("select count(*) from t")
+        assert cur.fetchall() == [(2,)]

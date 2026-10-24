@@ -2,6 +2,7 @@ import os
 import signal
 import subprocess
 import time
+from unittest import mock
 
 from pytest import CaptureFixture
 
@@ -78,3 +79,14 @@ def test_run_no_args_shows_usage(capsys: CaptureFixture) -> None:
 
     captured = capsys.readouterr()
     assert "usage" in captured.out
+
+
+def test_run_server_honours_db_path() -> None:
+    with (
+        mock.patch("fakesnow.server") as server,
+        mock.patch("fakesnow.cli.threading.Event"),
+        mock.patch("fakesnow.cli.signal.signal"),
+    ):
+        assert fakesnow.cli.main(["-s", "--db_path", "x"]) == 0
+
+    server.assert_called_once_with(port=None, host="127.0.0.1", db_path="x")

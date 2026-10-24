@@ -1509,6 +1509,16 @@ def test_predecessor_return_value_in_child(cur: snowflake.connector.cursor.Snowf
     assert cur.fetchall() == [("from root",)]
 
 
+def test_set_return_value_passes_on_predecessor_value_with_suffix(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _create_root_returning_value(cur)
+    cur.execute(
+        "create task child after root as select system$set_return_value(system$get_predecessor_return_value('root') || 'y')"
+    )
+    cur.execute("select system$task_dependents_enable('root')")
+    cur.execute("execute task root")
+    assert _history(cur, "return_value", "child") == [("from rooty",)]
+
+
 def test_predecessor_return_value_without_argument(cur: snowflake.connector.cursor.SnowflakeCursor):
     _create_root_returning_value(cur)
     cur.execute("create task child after root as insert into seen select system$get_predecessor_return_value()")

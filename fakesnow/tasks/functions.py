@@ -56,7 +56,8 @@ def task_functions(expression: Expr, context: TaskRunContext | None) -> Expr:
     if name == SET_RETURN_VALUE:
         expression.root().set("set_return_value", True)
         # outside a task run there is nothing to set
-        return args[0].copy() if context and args else _NULL.copy()
+        # a replacement isn't descended into by the transform, so replace the task functions nested in the value
+        return args[0].copy().transform(lambda e: task_functions(e, context)) if context and args else _NULL.copy()
     value = _read(name[len(_PREFIX) :], args, context) if context else None
     return _NULL.copy() if value is None else exp.Literal.string(value)
 

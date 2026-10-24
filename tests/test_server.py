@@ -4,7 +4,9 @@ import datetime
 import importlib
 import os
 import tempfile
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,7 @@ from pandas.testing import assert_frame_equal
 from snowflake.connector.cursor import ResultMetadata
 
 import fakesnow
+from fakesnow.instance import FakeSnow
 from tests.utils import indent
 
 
@@ -898,6 +901,24 @@ def test_server_stopping_one_of_two_servers_on_a_db_path_keeps_the_other_serving
         cur = conn.cursor()
         cur.execute("select 1")
         assert cur.fetchall() == [(1,)]
+
+
+def test_db_path_instance_is_shared_by_concurrent_first_logins(tmp_path: Path) -> None:
+    server_module = importlib.import_module("fakesnow.server")
+    real = server_module.FakeSnow
+
+    def slow_fake_snow(**kwargs: Any) -> FakeSnow:
+        # widen the window between checking the cache and filling it
+        time.sleep(0.2)
+        return real(**kwargs)
+
+    path = str(tmp_path / "concurrent")
+    os.mkdir(path)
+    with patch.object(server_module, "FakeSnow", slow_fake_snow), ThreadPoolExecutor(2) as pool:
+        first, second = pool.map(lambda _: server_module.instance_for(path), range(2))
+    restore = server_module.set_default_db_path(path)
+    restore()
+    assert first is second
 
 
 def test_server_missing_db_path_raises(tmp_path: Path) -> None:

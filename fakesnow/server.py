@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import secrets
+import threading
 from base64 import b64encode
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -38,8 +39,9 @@ logger.setLevel(logging.INFO)
 
 # server-wide default for logins that don't send FAKESNOW_DB_PATH. None is a shared in-memory database.
 default_db_path: str | None = None
-# instances keyed by realpath of their db_path. handlers run on the event loop thread, so no lock is needed.
+# instances keyed by realpath of their db_path. each server has its own event loop thread, so a lock guards them.
 _instances: dict[str, FakeSnow] = {}
+_instances_lock = threading.Lock()
 # number of running servers defaulting to each instance key, so the instance outlives all but the last
 _server_counts: dict[str, int] = {}
 sessions: dict[str, FakeSnowflakeConnection] = {}
@@ -57,9 +59,10 @@ def instance_for(db_path: str | None) -> FakeSnow:
     if db_path == ":isolated:":
         return FakeSnow()
     key = _instance_key(db_path)
-    if key not in _instances:
-        _instances[key] = FakeSnow(db_path=key) if db_path else FakeSnow()
-    return _instances[key]
+    with _instances_lock:
+        if key not in _instances:
+            _instances[key] = FakeSnow(db_path=key) if db_path else FakeSnow()
+        return _instances[key]
 
 
 def set_default_db_path(db_path: str | None) -> Callable[[], None]:
@@ -72,18 +75,21 @@ def set_default_db_path(db_path: str | None) -> Callable[[], None]:
     previous, default_db_path = default_db_path, db_path
     key = _instance_key(db_path)
     if db_path:
-        _server_counts[key] = _server_counts.get(key, 0) + 1
+        with _instances_lock:
+            _server_counts[key] = _server_counts.get(key, 0) + 1
 
     def restore() -> None:
         global default_db_path
         default_db_path = previous
         if not db_path:
             return
-        _server_counts[key] -= 1
-        if _server_counts[key]:
-            return
-        del _server_counts[key]
-        if fs := _instances.pop(key, None):
+        with _instances_lock:
+            _server_counts[key] -= 1
+            if _server_counts[key]:
+                return
+            del _server_counts[key]
+            fs = _instances.pop(key, None)
+        if fs:
             fs.duck_conn.close()
 
     return restore

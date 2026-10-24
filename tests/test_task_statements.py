@@ -61,6 +61,18 @@ def test_parse_create_task_finalize_is_property():
     assert s.properties == {"FINALIZE": "R1"}
 
 
+def test_parse_create_task_finalize_keeps_quoted_name_whole():
+    s = parse_task_statement('create task f1 finalize = "root.task" as select 1')
+    assert isinstance(s, CreateTask)
+    assert s.properties == {"FINALIZE": "root.task"}
+
+
+def test_parse_create_task_finalize_qualified_name():
+    s = parse_task_statement("create task f1 finalize = db1.schema1.r1 as select 1")
+    assert isinstance(s, CreateTask)
+    assert s.properties == {"FINALIZE": "R1"}
+
+
 def test_parse_create_task_property_values():
     s = parse_task_statement("create task t warehouse = wh allow_overlapping_execution = true retries = 3 as select 1")
     assert isinstance(s, CreateTask)

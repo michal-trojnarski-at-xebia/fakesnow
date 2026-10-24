@@ -557,3 +557,5 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
     runs (fakesnow: inlines them at CREATE time).
 20. The `RETURN_VALUE` recorded for `INSERT ... SELECT system$set_return_value(...)` (fakesnow: the row count) and for a
     boolean value (fakesnow: `'True'`).
+21. Making a root that has a finalizer into a child (`ALTER TASK root ADD AFTER parent`, or `SET FINALIZE`) — fakesnow
+    rejects it with `Invalid finalizer task <finalizer>: <root> is not a root task.`

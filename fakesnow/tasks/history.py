@@ -201,15 +201,16 @@ def _task_dependents(call: exp.Anonymous, database: str, current_schema: str | N
     start = f"name = {_literal(name.name)}" + (f" and schema_name = {_literal(schema)}" if schema else "")
     # the finalizer of a task is one of its dependents
     child = "(list_contains(t.predecessors, d.name) or t.finalize = d.name)"
-    depth = "" if recursive else " and d.depth < 1"
+    direct = "" if recursive else f" and d.name = {_literal(name.name)}"
     tasks = tasks_table(name.database or database)
+    # union, not union all, so a task reached by several paths is visited once
     return sqlglot.parse_one(
         f"""
-    with recursive deps(schema_name, name, depth) as (
-        select schema_name, name, 0 from {tasks} where {start}
-        union all
-        select t.schema_name, t.name, d.depth + 1 from {tasks} t
-        join deps d on t.schema_name = d.schema_name and {child}{depth}
+    with recursive deps(schema_name, name) as (
+        select schema_name, name from {tasks} where {start}
+        union
+        select t.schema_name, t.name from {tasks} t
+        join deps d on t.schema_name = d.schema_name and {child}{direct}
     )
     select r.* from ({rows_sql(name.database or database)}) r
     where (r.schema_name, r.name) in (select schema_name, name from deps)

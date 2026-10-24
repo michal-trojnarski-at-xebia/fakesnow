@@ -501,6 +501,12 @@ def test_create_finalizer_of_non_root_raises(cur: snowflake.connector.cursor.Sno
         cur.execute("create task fin finalize = child as select 1")
 
 
+def test_create_finalizer_of_quoted_root_with_period(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute('create task "root.task" as select 1')
+    cur.execute('create task fin finalize = "root.task" as select 1')
+    assert cur.fetchall() == [("Task FIN successfully created.",)]
+
+
 def test_create_task_finalizing_itself_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 as select 1")
     with pytest.raises(
@@ -746,6 +752,17 @@ def test_alter_task_set_finalize_of_non_root_raises(cur: snowflake.connector.cur
     cur.execute("create task fin as select 1")
     with pytest.raises(snowflake.connector.errors.ProgrammingError, match="is not a root task"):
         cur.execute("alter task fin set finalize = child")
+
+
+def test_alter_root_with_finalizer_add_after_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    cur.execute("create task fin finalize = root as select 1")
+    cur.execute("create task parent as select 1")
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"Invalid finalizer task DB1\.SCHEMA1\.FIN: DB1\.SCHEMA1\.ROOT is not a root task\.",
+    ):
+        cur.execute("alter task root add after parent")
 
 
 def test_alter_task_set_schedule_on_child_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -1972,6 +1989,17 @@ def test_task_dependents_not_recursive(cur: snowflake.connector.cursor.Snowflake
         "order by name"
     )
     assert cur.fetchall() == [("CHILD",), ("ROOT",)]
+
+
+def test_task_dependents_reconverging_branches(cur: snowflake.connector.cursor.SnowflakeCursor):
+    # a chain of diamonds has few tasks but exponentially many paths
+    cur.execute("create task d0 as select 1")
+    for i in range(1, 26):
+        cur.execute(f"create task l{i} after d{i - 1} as select 1")
+        cur.execute(f"create task r{i} after d{i - 1} as select 1")
+        cur.execute(f"create task d{i} after l{i}, r{i} as select 1")
+    cur.execute("select count(*) from table(information_schema.task_dependents(task_name => 'd0'))")
+    assert cur.fetchall() == [(76,)]
 
 
 def test_task_dependents_has_show_tasks_columns(cur: snowflake.connector.cursor.SnowflakeCursor):

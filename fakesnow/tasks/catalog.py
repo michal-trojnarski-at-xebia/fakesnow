@@ -364,6 +364,10 @@ class TaskCatalog:
             self.check_root_suspended(member)
         if len({self.root_of(pred).fqname for pred in preds}) > 1:
             raise _error(MIXED_GRAPHS.format(fqname=task.fqname), 2003, "02000")
+        finalizer = self.finalizer_of(task)
+        if finalizer and (task.predecessors or task.finalize):
+            reason = FINALIZER_NOT_ROOT.format(root=task.fqname)
+            raise _error(INVALID_FINALIZER.format(fqname=finalizer.fqname, reason=reason), 2003, "02000")
         if (task.predecessors or task.finalize) and task.schedule:
             raise _error(SCHEDULED_CHILD.format(fqname=task.fqname), 2003, "02000")
         if finalized:
@@ -526,7 +530,7 @@ def _set_property(task: Task, prop: str, value: str) -> None:
         if column == "allow_overlapping_execution":
             task.allow_overlapping_execution = value.upper() == "TRUE"
         elif column == "finalize":
-            task.finalize = value.rsplit(".", 1)[-1]
+            task.finalize = value
         else:
             setattr(task, column, value)
     elif prop in OTHER_PROPERTIES:

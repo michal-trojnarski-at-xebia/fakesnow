@@ -67,6 +67,11 @@ SQL_COPY_ROWS = Template(
 )
 
 
+def _escape_literal(text: str) -> str:
+    """Escape text for a single-quoted SQL string literal, eg: a quoted identifier in a status message."""
+    return text.replace("'", "''")
+
+
 # The result columns snowflake reports when asked to describe a statement without running it.
 # The counts are placeholders, only the column names and types are used.
 DESCRIBE_RESULT_SQL: dict[type[Expr], str] = {
@@ -662,13 +667,13 @@ class FakeSnowflakeCursor:
                 self._conn.database_set = True
                 self._conn._schema = schema
                 self._conn.schema_set = True
-                result_sql = SQL_CREATED_SCHEMA.substitute(name=ident)
+                result_sql = SQL_CREATED_SCHEMA.substitute(name=_escape_literal(ident))
 
             elif cmd == "CREATE SEQUENCE" and ident:
-                result_sql = SQL_CREATED_SEQUENCE.substitute(name=ident)
+                result_sql = SQL_CREATED_SEQUENCE.substitute(name=_escape_literal(ident))
 
             elif cmd == "CREATE TABLE" and ident:
-                result_sql = SQL_CREATED_TABLE.substitute(name=ident)
+                result_sql = SQL_CREATED_TABLE.substitute(name=_escape_literal(ident))
 
                 # a newly created table object has no load history. history is keyed by the Snowflake name, which a
                 # temporary table shares with any permanent one, and the temporary table's qualifiers are stripped.
@@ -686,10 +691,10 @@ class FakeSnowflakeCursor:
                 result_sql = SQL_SUCCESS
 
             elif cmd == "CREATE VIEW" and ident:
-                result_sql = SQL_CREATED_VIEW.substitute(name=ident)
+                result_sql = SQL_CREATED_VIEW.substitute(name=_escape_literal(ident))
 
             elif cmd.startswith("DROP") and ident:
-                result_sql = SQL_DROPPED.substitute(name=ident)
+                result_sql = SQL_DROPPED.substitute(name=_escape_literal(ident))
 
                 # if dropping the current database/schema then reset conn metadata
                 if cmd == "DROP DATABASE" and ident == self._conn.database:

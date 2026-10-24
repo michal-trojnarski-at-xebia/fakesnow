@@ -104,6 +104,11 @@ before server mode can support any of the three parts.
 - This is a small behaviour change for existing `FAKESNOW_DB_PATH` users. Today the second login on
   a path fails anyway, so nothing that works today breaks. Note it in the CHANGELOG.
 - When an instance is released (for example, server shutdown) is the builder's call.
+- dbt-snowflake can't send arbitrary session parameters (only `QUERY_TAG`), so a dbt profile can't
+  set `FAKESNOW_DB_PATH`. The server therefore also accepts a **default database path**:
+  `fakesnow.server(db_path=...)`, and `fakesnow -s --db_path <path>`, which today ignores
+  `--db_path`. It is used for logins that don't set the parameter. Without one, logins share the
+  in-memory instance as today. (Designer's call, added while planning.)
 
 ---
 
@@ -128,7 +133,7 @@ statement. Each is a separate behaviour with its own tests.
 | 4 | `alter session set query_tag = '...'` / `alter session unset query_tag` | NotImplementedError | Stored per session |
 | 5 | `show parameters like 'query_tag' in session` | 0 rows → dbt raises | Returns the row with the current value (empty string by default), Snowflake's columns |
 | 6 | `grant ... to ...`, `revoke ...` (`grants` config) | parse error | Accepted, no effect, Snowflake's status row |
-| 7 | `show grants on <object>` | parse error | Empty result with Snowflake's columns |
+| 7 | `show grants on <object>` | parse error | Snowflake's columns, with the one row live Snowflake always has: `OWNERSHIP` held by the current role. dbt ignores OWNERSHIP when diffing grants. |
 | 8 | `alter table a swap with b` | fails | Swaps the two tables' contents and names |
 | 9 | `select current_role()`, `current_warehouse()` | function doesn't exist | Return a stable value (the connection's role/warehouse if given, else a default — check live what a fresh session returns) |
 | 10 | `select system$cancel_all_queries(<session id>)` (dbt cleanup on Ctrl-C) | fails | Accepted, returns Snowflake's message |
@@ -144,8 +149,8 @@ module that already owns that kind of statement.
   `seed`, `run` (table, view, incremental with `merge`, `append` and `delete+insert`), `snapshot`,
   `test`, `docs generate`. Then it asserts on resulting table contents. It runs in patch mode
   (same `FakeSnow` across both invocations) and server mode.
-- Server mode depends on the shared-instance change in Part 0. The server-mode run uses a real
-  `FAKESNOW_DB_PATH`, so dbt's several connections share one instance.
+- Server mode depends on Part 0. dbt connects through the profile's `host`/`port`/`protocol`, and
+  all its connections land on the server's default instance.
 - dbt-core and dbt-snowflake go into a new dependency group (e.g. `dbt`), not the core
   dependencies. The end-to-end test is skipped when dbt isn't installed. CI installs the group.
 

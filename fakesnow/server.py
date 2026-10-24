@@ -101,15 +101,19 @@ async def login_request(request: Request) -> JSONResponse:
     fs = instance_for(session_params.get("FAKESNOW_DB_PATH") or default_db_path)
     token = secrets.token_urlsafe(32)
     logger.info(f"Session login {database=} {schema=} {nop_regexes=}")
-    sessions[token] = fs.connect(
-        database,
-        schema,
-        nop_regexes=nop_regexes,
-        autocommit=autocommit,
-        session_parameters=session_params,
-        role=role,
-        warehouse=warehouse,
-    )
+    try:
+        sessions[token] = fs.connect(
+            database,
+            schema,
+            nop_regexes=nop_regexes,
+            autocommit=autocommit,
+            session_parameters=session_params,
+            role=role,
+            warehouse=warehouse,
+        )
+    except NotADirectoryError as e:
+        # fail the login, rather than return a server error the client retries until it times out
+        return JSONResponse({"data": None, "message": str(e), "success": False})
     return JSONResponse(
         {
             "data": {

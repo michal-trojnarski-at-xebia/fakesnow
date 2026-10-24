@@ -85,6 +85,9 @@ def main(args: Sequence[str] = sys.argv[1:]) -> int:
         except RuntimeError:
             # catch to avoid showing traceback since uvicorn will log the error
             return 1
+        except NotADirectoryError as e:
+            print(e, file=sys.stderr)
+            return 1
 
         return 0
 

@@ -839,6 +839,12 @@ def test_db_path_sessions_share_instance(server: dict, tmp_path: Path) -> None:
         assert cur.fetchall() == [(1,)]
 
 
+def test_db_path_session_with_missing_directory_fails_login(server: dict, tmp_path: Path) -> None:
+    params = server["session_parameters"] | {"FAKESNOW_DB_PATH": str(tmp_path / "missing")}
+    with pytest.raises(snowflake.connector.errors.DatabaseError, match="No such directory"):
+        snowflake.connector.connect(**(server | {"session_parameters": params}), database="db1", login_timeout=10)
+
+
 def test_db_path_sessions_share_instance_across_path_spellings(server: dict, tmp_path: Path) -> None:
     # same directory, spelled with a trailing slash and a "." segment
     p1 = server["session_parameters"] | {"FAKESNOW_DB_PATH": str(tmp_path)}
@@ -879,6 +885,12 @@ def test_server_default_db_path_persists(tmp_path: Path) -> None:
         cur = conn.cursor()
         cur.execute("select count(*) from t")
         assert cur.fetchall() == [(2,)]
+
+
+def test_server_missing_db_path_raises(tmp_path: Path) -> None:
+    missing = tmp_path / "missing"
+    with pytest.raises(NotADirectoryError, match="No such directory"), fakesnow.server(db_path=str(missing)):
+        pass
 
 
 def test_server_failed_start_restores_default_db_path(tmp_path: Path) -> None:

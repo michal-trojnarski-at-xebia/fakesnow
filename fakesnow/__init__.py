@@ -109,6 +109,9 @@ def server(
             Logins with the same path share one instance. The default is process-global, so concurrent
             servers with different db_paths in one process aren't supported. Defaults to None (in-memory).
 
+    Raises:
+        NotADirectoryError: If db_path is not an existing directory.
+
     Yields:
         Iterator[dict]: Connection parameters for the fake snowflake server.
     """
@@ -117,6 +120,10 @@ def server(
     from time import sleep
 
     import uvicorn
+
+    # logins create the instance, so check now rather than fail every login
+    if db_path and not os.path.isdir(db_path):
+        raise NotADirectoryError(f"No such directory: '{db_path}'. Please ensure db_path exists.")
 
     server_module = importlib.import_module("fakesnow.server")
 

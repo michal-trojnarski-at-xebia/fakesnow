@@ -81,9 +81,9 @@ def swap_table(
 ) -> list[Expr]:
     """Transform ALTER TABLE a SWAP WITH b, which duckdb lacks, into renames through a temporary name.
 
-    a -> tmp, b -> a, tmp -> b. The b -> a rename carries swap_metadata so the cursor can swap the tables' recorded
-    comments and text lengths, which are keyed by name. Both operands are checked to be tables, and read so that a
-    missing one fails, before anything is renamed.
+    a -> tmp, b -> a, tmp -> b. The b -> a rename carries swap_metadata so the cursor can swap permanent tables'
+    recorded comments and text lengths, which are keyed by name. Both operands are checked to be tables, and read so
+    that a missing one fails, before anything is renamed.
     """
     if not (
         isinstance(expression, exp.Alter)
@@ -114,10 +114,12 @@ def swap_table(
             msg=f"SQL compilation error:\nCannot swap table '{first.name}' with itself.", errno=2003
         )
     catalog, schema = location(first)
+    temporary = False
     for operand in (first, second):
         name = fold(operand.this)
         # a temporary object shadows a permanent one of the same name
         kind = temporaries.kind(name, catalog, schema) if catalog and schema else None
+        temporary = temporary or bool(kind)
         if not kind and (row := duck_conn.execute(_KIND_SQL, [catalog, schema, name]).fetchone()):
             kind = row[0]
         if kind and kind != "TABLE":
@@ -142,7 +144,8 @@ def swap_table(
         )
 
     second_to_first = rename(second.this, first.this)
-    second_to_first.set("swap_metadata", True)
+    # temporary tables have no recorded metadata, and their names would swap the permanent tables' metadata
+    second_to_first.set("swap_metadata", not temporary)
     probes = [exp.select("1").from_(t.copy()).where(exp.false()) for t in (first, second)]
     return [*probes, rename(first.this, tmp), second_to_first, rename(tmp, second.this)]
 

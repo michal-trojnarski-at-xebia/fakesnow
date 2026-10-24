@@ -211,6 +211,19 @@ def test_add_column_to_shadowing_temporary_table_leaves_permanent_text_lengths(
     assert cur.fetchall() == [(20,)]
 
 
+def test_swap_shadowing_temporary_tables_leaves_permanent_metadata(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table a (c varchar(5)) comment = 'from a'")
+    cur.execute("create table b (c varchar(20)) comment = 'from b'")
+    cur.execute("create temporary table a (c int)")
+    cur.execute("create temporary table b (c int)")
+    cur.execute("alter table a swap with b")
+    # drops the temporary tables, which shadow the permanent ones
+    cur.execute("drop table a")
+    cur.execute("drop table b")
+    cur.execute("select table_name, comment from information_schema.tables where table_name in ('A', 'B') order by 1")
+    assert cur.fetchall() == [("A", "from a"), ("B", "from b")]
+
+
 def test_qualified_temporary_table_is_session_isolated(conn: snowflake.connector.SnowflakeConnection):
     conn.cursor().execute("create temporary table db1.schema1.tt (a int)")
     with (

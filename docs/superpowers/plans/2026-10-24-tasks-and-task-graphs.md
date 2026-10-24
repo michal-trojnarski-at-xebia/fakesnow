@@ -511,3 +511,10 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
     the bare name; the format of `'CURRENT_TASK_GRAPH_ORIGINAL_SCHEDULED_TIMESTAMP'` (fakesnow: UTC,
     `%Y-%m-%dT%H:%M:%S.%f%z`); `GET_PREDECESSOR_RETURN_VALUE()` with no argument and several predecessors (fakesnow:
     NULL).
+18. Task table functions (`fakesnow/tasks/history.py`): `RESULT_LIMIT` keeps the newest rows (default
+    `DEFAULT_RESULT_LIMIT`, 100) and rows come newest first; `ERROR_ONLY` means `FAILED` or `CANCELLED`
+    (`ERROR_STATES`); `TASK_NAME`, `ROOT_TASK_NAME` and `SCHEMA_NAME` match case-insensitively; `DATABASE_NAME` filters the
+    database of the `INFORMATION_SCHEMA` it is called on; unrecorded columns are NULL and `GRAPH_VERSION` is
+    `GRAPH_VERSION` (1); the column names of `TASK_DEPENDENTS` are those of SHOW TASKS (lower case) where the history
+    functions' are upper case; `TASK_DEPENDENTS` includes the named task itself and a finalizer is a dependent of the
+    task it finalizes; an unqualified `TASK_NAME` is looked up in the current schema.

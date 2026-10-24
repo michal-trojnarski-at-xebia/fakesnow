@@ -299,6 +299,7 @@ class FakeSnowflakeCursor:
             expression.transform(lambda e: transforms.identifier(e, params), copy=False)
             .transform(tasks.task_statement, copy=False)
             .transform(lambda e: tasks.task_functions(e, self._conn.task_context), copy=False)
+            .transform(lambda e: tasks.task_table_functions(e, self._conn.database, self._conn.schema), copy=False)
             .transform(transforms.upper_case_unquoted_identifiers, copy=False)
             .transform(
                 lambda e: transforms.temporary_objects(

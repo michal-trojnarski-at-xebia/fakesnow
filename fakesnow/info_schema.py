@@ -299,51 +299,51 @@ create table if not exists ${catalog}._fs_information_schema._fs_tasks (
     """
 )
 
-# one row per task run by a graph run, the source of TASK_HISTORY
+# one row per task run by a graph run, the source of TASK_HISTORY. upper case column names are those of its result.
 SQL_CREATE_TASK_HISTORY_TABLE = Template(
     """
 create table if not exists ${catalog}._fs_information_schema._fs_task_history (
-    query_id VARCHAR,
-    name VARCHAR,
-    schema_name VARCHAR,
-    query_text VARCHAR,
-    condition_text VARCHAR,
-    state VARCHAR,
-    error_code INTEGER,
-    error_message VARCHAR,
-    scheduled_time TIMESTAMPTZ,
-    query_start_time TIMESTAMPTZ,
-    completed_time TIMESTAMPTZ,
-    root_task_id VARCHAR,
-    run_id BIGINT,
-    return_value VARCHAR,
-    scheduled_from VARCHAR,
-    attempt_number INTEGER,
-    config VARCHAR,
-    graph_run_group_id VARCHAR
+    QUERY_ID VARCHAR,
+    NAME VARCHAR,
+    SCHEMA_NAME VARCHAR,
+    QUERY_TEXT VARCHAR,
+    CONDITION_TEXT VARCHAR,
+    STATE VARCHAR,
+    ERROR_CODE INTEGER,
+    ERROR_MESSAGE VARCHAR,
+    SCHEDULED_TIME TIMESTAMPTZ,
+    QUERY_START_TIME TIMESTAMPTZ,
+    COMPLETED_TIME TIMESTAMPTZ,
+    ROOT_TASK_ID VARCHAR,
+    RUN_ID BIGINT,
+    RETURN_VALUE VARCHAR,
+    SCHEDULED_FROM VARCHAR,
+    ATTEMPT_NUMBER INTEGER,
+    CONFIG VARCHAR,
+    GRAPH_RUN_GROUP_ID VARCHAR
 )
     """
 )
 
-# one row per graph run, the source of COMPLETE_TASK_GRAPHS
+# one row per graph run, the source of COMPLETE_TASK_GRAPHS. upper case column names are those of its result.
 SQL_CREATE_TASK_GRAPH_RUNS_TABLE = Template(
     """
 create table if not exists ${catalog}._fs_information_schema._fs_task_graph_runs (
-    root_task_name VARCHAR,
-    schema_name VARCHAR,
-    state VARCHAR,
-    scheduled_from VARCHAR,
-    first_error_task_name VARCHAR,
-    first_error_code INTEGER,
-    first_error_message VARCHAR,
-    scheduled_time TIMESTAMPTZ,
-    query_start_time TIMESTAMPTZ,
-    completed_time TIMESTAMPTZ,
-    root_task_id VARCHAR,
-    run_id BIGINT,
-    attempt_number INTEGER,
-    config VARCHAR,
-    graph_run_group_id VARCHAR
+    ROOT_TASK_NAME VARCHAR,
+    SCHEMA_NAME VARCHAR,
+    STATE VARCHAR,
+    SCHEDULED_FROM VARCHAR,
+    FIRST_ERROR_TASK_NAME VARCHAR,
+    FIRST_ERROR_CODE INTEGER,
+    FIRST_ERROR_MESSAGE VARCHAR,
+    SCHEDULED_TIME TIMESTAMPTZ,
+    QUERY_START_TIME TIMESTAMPTZ,
+    COMPLETED_TIME TIMESTAMPTZ,
+    ROOT_TASK_ID VARCHAR,
+    RUN_ID BIGINT,
+    ATTEMPT_NUMBER INTEGER,
+    CONFIG VARCHAR,
+    GRAPH_RUN_GROUP_ID VARCHAR
 )
     """
 )

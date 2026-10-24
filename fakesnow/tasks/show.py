@@ -24,7 +24,7 @@ def _literal(value: str) -> str:
     return "'{}'".format(value.replace("'", "''"))
 
 
-def _rows(database: str) -> str:
+def rows_sql(database: str) -> str:
     """The SHOW TASKS columns of every task in a database."""
     table = tasks_table(database)
     qualified = f"{_literal(database + '.')} || t.schema_name || '.' ||"
@@ -77,7 +77,7 @@ def _rows(database: str) -> str:
 
 def describe_task_sql(task: Task) -> str:
     """The row of SHOW TASKS for one task."""
-    return f"""select * from ({_rows(task.database)}) where schema_name = {_literal(task.schema_name)}
+    return f"""select * from ({rows_sql(task.database)}) where schema_name = {_literal(task.schema_name)}
         and name = {_literal(task.name)}"""
 
 
@@ -129,7 +129,7 @@ def show_tasks_sql(
     if stmt.limit_from is not None:
         filters.append(f"name >= {_literal(stmt.limit_from)}")
 
-    rows = " union all ".join(_rows(d) for d in databases)
+    rows = " union all ".join(rows_sql(d) for d in databases)
     where = f" where {' and '.join(filters)}" if filters else ""
     limit = f" limit {stmt.limit}" if stmt.limit is not None else ""
     columns = _TERSE_COLUMNS if stmt.terse else "*"

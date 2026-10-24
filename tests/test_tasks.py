@@ -1084,12 +1084,14 @@ def test_show_tasks_in_account_skips_database_without_tasks_table(conn: snowflak
 
 def _history(cur: snowflake.connector.cursor.SnowflakeCursor, columns: str, name: str | None = None) -> list[tuple]:
     where = f" where name = '{name.upper()}'" if name else ""
-    cur.execute(f"select {columns} from db1._fs_information_schema._fs_task_history{where} order by scheduled_time")
+    history = "table(information_schema.task_history(result_limit => 1000))"
+    cur.execute(f"select {columns} from {history}{where} order by scheduled_time")
     return cur.fetchall()
 
 
 def _graph_runs(cur: snowflake.connector.cursor.SnowflakeCursor, columns: str) -> list[tuple]:
-    cur.execute(f"select {columns} from db1._fs_information_schema._fs_task_graph_runs order by scheduled_time")
+    graphs = "table(information_schema.complete_task_graphs(result_limit => 1000))"
+    cur.execute(f"select {columns} from {graphs} order by scheduled_time")
     return cur.fetchall()
 
 
@@ -1332,19 +1334,19 @@ def _run_graph_twice(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
 
 def test_execute_task_graph_run_group_id_per_run(cur: snowflake.connector.cursor.SnowflakeCursor):
     _run_graph_twice(cur)
-    cur.execute("select count(distinct graph_run_group_id) from db1._fs_information_schema._fs_task_history")
+    cur.execute("select count(distinct graph_run_group_id) from table(information_schema.task_history())")
     assert cur.fetchall() == [(2,)]
 
 
 def test_execute_task_run_id_per_run(cur: snowflake.connector.cursor.SnowflakeCursor):
     _run_graph_twice(cur)
-    cur.execute("select count(distinct run_id) from db1._fs_information_schema._fs_task_history")
+    cur.execute("select count(distinct run_id) from table(information_schema.task_history())")
     assert cur.fetchall() == [(2,)]
 
 
 def test_execute_task_history_root_task_id_shared(cur: snowflake.connector.cursor.SnowflakeCursor):
     _run_graph_twice(cur)
-    cur.execute("select count(distinct root_task_id) from db1._fs_information_schema._fs_task_history")
+    cur.execute("select count(distinct root_task_id) from table(information_schema.task_history())")
     assert cur.fetchall() == [(1,)]
 
 
@@ -1665,3 +1667,247 @@ def test_get_predecessor_return_value_without_argument_and_several_predecessors(
 def test_set_return_value_outside_task_returns_null(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("select system$set_return_value('x')")
     assert cur.fetchall() == [(None,)]
+
+
+def _table_function(cur: snowflake.connector.cursor.SnowflakeCursor, sql: str) -> list[dict]:
+    cur.execute(sql)
+    names = [d.name for d in cur.description]
+    return [dict(zip(names, row, strict=True)) for row in cur.fetchall()]
+
+
+def test_task_history_succeeded_row(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select 1")
+    cur.execute("execute task t1")
+    (row,) = _table_function(cur, "select * from table(information_schema.task_history())")
+    assert {k: row[k] for k in ("NAME", "DATABASE_NAME", "SCHEMA_NAME", "QUERY_TEXT", "STATE", "GRAPH_VERSION")} == {
+        "NAME": "T1",
+        "DATABASE_NAME": "DB1",
+        "SCHEMA_NAME": "SCHEMA1",
+        "QUERY_TEXT": "select 1",
+        "STATE": "SUCCEEDED",
+        "GRAPH_VERSION": 1,
+    }
+
+
+def test_task_history_columns(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("select * from table(information_schema.task_history())")
+    assert [d.name for d in cur.description] == [
+        "QUERY_ID",
+        "NAME",
+        "DATABASE_NAME",
+        "SCHEMA_NAME",
+        "QUERY_TEXT",
+        "CONDITION_TEXT",
+        "STATE",
+        "ERROR_CODE",
+        "ERROR_MESSAGE",
+        "SCHEDULED_TIME",
+        "QUERY_START_TIME",
+        "NEXT_SCHEDULED_TIME",
+        "COMPLETED_TIME",
+        "ROOT_TASK_ID",
+        "GRAPH_VERSION",
+        "RUN_ID",
+        "RETURN_VALUE",
+        "SCHEDULED_FROM",
+        "ATTEMPT_NUMBER",
+        "CONFIG",
+        "QUERY_HASH",
+        "QUERY_HASH_VERSION",
+        "QUERY_PARAMETERIZED_HASH",
+        "QUERY_PARAMETERIZED_HASH_VERSION",
+        "GRAPH_RUN_GROUP_ID",
+        "BACKFILL_INFO",
+        "SPCS_JOB_ID",
+    ]
+
+
+def test_task_history_failed_row_has_error(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select * from missing")
+    cur.execute("execute task t1")
+    (row,) = _table_function(cur, "select * from table(information_schema.task_history())")
+    assert (row["STATE"], row["ERROR_CODE"]) == ("FAILED", 2003)
+    assert "MISSING" in row["ERROR_MESSAGE"]
+
+
+def test_task_history_database_qualified(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select 1")
+    cur.execute("execute task t1")
+    cur.execute("select name from table(db1.information_schema.task_history())")
+    assert cur.fetchall() == [("T1",)]
+
+
+def test_task_history_alias(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select 1")
+    cur.execute("execute task t1")
+    cur.execute("select h.name from table(information_schema.task_history()) h")
+    assert cur.fetchall() == [("T1",)]
+
+
+def test_task_history_task_name_filter(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select 1")
+    cur.execute("create task t2 as select 1")
+    cur.execute("execute task t1")
+    cur.execute("execute task t2")
+    cur.execute("select name from table(information_schema.task_history(task_name => 't2'))")
+    assert cur.fetchall() == [("T2",)]
+
+
+def test_task_history_error_only(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task ok as select 1")
+    cur.execute("create task bad as select * from missing")
+    cur.execute("execute task ok")
+    cur.execute("execute task bad")
+    cur.execute("select name from table(information_schema.task_history(error_only => true))")
+    assert cur.fetchall() == [("BAD",)]
+
+
+def test_task_history_result_limit(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select 1")
+    cur.execute("create task t2 as select 1")
+    cur.execute("execute task t1")
+    cur.execute("execute task t2")
+    cur.execute("select name from table(information_schema.task_history(result_limit => 1))")
+    assert cur.fetchall() == [("T2",)]
+
+
+def test_task_history_newest_first(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select 1")
+    cur.execute("create task t2 as select 1")
+    cur.execute("execute task t1")
+    cur.execute("execute task t2")
+    cur.execute("select name from table(information_schema.task_history())")
+    assert cur.fetchall() == [("T2",), ("T1",)]
+
+
+def test_task_history_scheduled_time_range(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select 1")
+    cur.execute("execute task t1")
+    cur.execute("select name from table(information_schema.task_history(scheduled_time_range_start => '2999-01-01'))")
+    assert cur.fetchall() == []
+
+
+def test_task_history_root_task_id(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select 1")
+    cur.execute("create task t2 as select 1")
+    cur.execute("execute task t1")
+    cur.execute("execute task t2")
+    ((root_id,),) = _show(cur, "id", "t1")
+    cur.execute(f"select name from table(information_schema.task_history(root_task_id => '{root_id}'))")
+    assert cur.fetchall() == [("T1",)]
+
+
+def test_task_history_non_literal_argument_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="literal"):
+        cur.execute("select * from table(information_schema.task_history(task_name => lower('T1')))")
+
+
+def test_task_history_query_id_result_scan(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select 42 as answer")
+    cur.execute("execute task t1")
+    cur.execute("select query_id from table(information_schema.task_history())")
+    ((query_id,),) = cur.fetchall()
+    cur.execute(f"select * from table(result_scan('{query_id}'))")
+    assert cur.fetchall() == [(42,)]
+
+
+def test_task_history_survives_caller_rollback(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select 1")
+    cur.execute("begin")
+    cur.execute("execute task t1")
+    cur.execute("rollback")
+    cur.execute("select name from table(information_schema.task_history())")
+    assert cur.fetchall() == [("T1",)]
+
+
+def test_complete_task_graphs_failed_graph(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    cur.execute("create task child after root as select * from missing")
+    cur.execute("select system$task_dependents_enable('root')")
+    cur.execute("execute task root")
+    (row,) = _table_function(cur, "select * from table(information_schema.complete_task_graphs())")
+    assert {k: row[k] for k in ("ROOT_TASK_NAME", "DATABASE_NAME", "STATE", "FIRST_ERROR_TASK_NAME")} == {
+        "ROOT_TASK_NAME": "ROOT",
+        "DATABASE_NAME": "DB1",
+        "STATE": "FAILED",
+        "FIRST_ERROR_TASK_NAME": "CHILD",
+    }
+
+
+def test_complete_task_graphs_columns(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("select * from table(information_schema.complete_task_graphs())")
+    assert [d.name for d in cur.description] == [
+        "ROOT_TASK_NAME",
+        "DATABASE_NAME",
+        "SCHEMA_NAME",
+        "STATE",
+        "SCHEDULED_FROM",
+        "FIRST_ERROR_TASK_NAME",
+        "FIRST_ERROR_CODE",
+        "FIRST_ERROR_MESSAGE",
+        "SCHEDULED_TIME",
+        "QUERY_START_TIME",
+        "NEXT_SCHEDULED_TIME",
+        "COMPLETED_TIME",
+        "ROOT_TASK_ID",
+        "GRAPH_VERSION",
+        "RUN_ID",
+        "ATTEMPT_NUMBER",
+        "CONFIG",
+        "GRAPH_RUN_GROUP_ID",
+        "BACKFILL_INFO",
+    ]
+
+
+def test_complete_task_graphs_root_task_name_filter(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task r1 as select 1")
+    cur.execute("create task r2 as select 1")
+    cur.execute("execute task r1")
+    cur.execute("execute task r2")
+    cur.execute("select root_task_name from table(information_schema.complete_task_graphs(root_task_name => 'r1'))")
+    assert cur.fetchall() == [("R1",)]
+
+
+def test_complete_task_graphs_error_only(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task ok as select 1")
+    cur.execute("create task bad as select * from missing")
+    cur.execute("execute task ok")
+    cur.execute("execute task bad")
+    cur.execute("select root_task_name from table(information_schema.complete_task_graphs(error_only => true))")
+    assert cur.fetchall() == [("BAD",)]
+
+
+def _dependents_graph(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
+    cur.execute("create task root as select 1")
+    cur.execute("create task child after root as select 1")
+    cur.execute("create task grandchild after child as select 1")
+    cur.execute("create task other as select 1")
+
+
+def test_task_dependents_recursive(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _dependents_graph(cur)
+    cur.execute("select name from table(information_schema.task_dependents(task_name => 'root')) order by name")
+    assert cur.fetchall() == [("CHILD",), ("GRANDCHILD",), ("ROOT",)]
+
+
+def test_task_dependents_not_recursive(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _dependents_graph(cur)
+    cur.execute(
+        "select name from table(information_schema.task_dependents(task_name => 'root', recursive => false)) "
+        "order by name"
+    )
+    assert cur.fetchall() == [("CHILD",), ("ROOT",)]
+
+
+def test_task_dependents_has_show_tasks_columns(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _dependents_graph(cur)
+    cur.execute("show tasks")
+    expected = [d.name for d in cur.description]
+    cur.execute("select * from table(information_schema.task_dependents(task_name => 'root'))")
+    assert [d.name for d in cur.description] == expected
+
+
+def test_task_dependents_qualified_task_name(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _dependents_graph(cur)
+    cur.execute("select name from table(information_schema.task_dependents(task_name => 'db1.schema1.child'))")
+    assert sorted(cur.fetchall()) == [("CHILD",), ("GRANDCHILD",)]

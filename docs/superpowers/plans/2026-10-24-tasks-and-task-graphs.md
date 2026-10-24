@@ -486,3 +486,4 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
 6. EXECUTE TASK inside an explicit transaction: rejected or commits (spec check 10).
 7. `SYSTEM$TASK_DEPENDENTS_ENABLE` and `SYSTEM$SET_RETURN_VALUE` return values.
 8. Whether resuming a standalone task without a SCHEDULE is allowed.
+9. Whether `EXECUTE TASK ... USING CONFIG` replaces the root's CONFIG or merges into it.

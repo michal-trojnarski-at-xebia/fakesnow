@@ -921,6 +921,21 @@ def test_db_path_instance_is_shared_by_concurrent_first_logins(tmp_path: Path) -
     assert first is second
 
 
+def test_server_default_db_path_kept_until_last_same_path_server_stops(tmp_path: Path) -> None:
+    first = fakesnow.server(db_path=str(tmp_path))
+    second = fakesnow.server(db_path=str(tmp_path))
+    first.__enter__()
+    kwargs = second.__enter__()
+    try:
+        # stop the first-started server while the second keeps running
+        first.__exit__(None, None, None)
+        with snowflake.connector.connect(**kwargs, database="db1", schema="s1"):
+            pass
+        assert (tmp_path / "DB1.db").exists()
+    finally:
+        second.__exit__(None, None, None)
+
+
 def test_server_missing_db_path_raises(tmp_path: Path) -> None:
     missing = tmp_path / "missing"
     with pytest.raises(NotADirectoryError, match="No such directory"), fakesnow.server(db_path=str(missing)):

@@ -44,6 +44,9 @@ _instances: dict[str, FakeSnow] = {}
 _instances_lock = threading.Lock()
 # number of running servers defaulting to each instance key, so the instance outlives all but the last
 _server_counts: dict[str, int] = {}
+# the db_path of each running server, oldest first. the newest is the default, so stopping servers in any order
+# leaves the default of one still running
+_running_defaults: list[tuple[object, str | None]] = []
 sessions: dict[str, FakeSnowflakeConnection] = {}
 
 
@@ -66,21 +69,25 @@ def instance_for(db_path: str | None) -> FakeSnow:
 
 
 def set_default_db_path(db_path: str | None) -> Callable[[], None]:
-    """Set the default db_path and return a function that restores the previous default.
+    """Set the default db_path for a starting server and return a function to call when it stops.
 
-    Restoring also closes the instance for db_path once no other server in the process defaults to it, so other
-    servers keep their instances and sessions.
+    Stopping restores the default of the newest server still running, or None, and closes the instance for db_path
+    once no other server in the process defaults to it, so other servers keep their instances and sessions.
     """
     global default_db_path
-    previous, default_db_path = default_db_path, db_path
+    token = object()
     key = _instance_key(db_path)
-    if db_path:
-        with _instances_lock:
+    with _instances_lock:
+        _running_defaults.append((token, db_path))
+        default_db_path = db_path
+        if db_path:
             _server_counts[key] = _server_counts.get(key, 0) + 1
 
     def restore() -> None:
         global default_db_path
-        default_db_path = previous
+        with _instances_lock:
+            _running_defaults[:] = [(t, p) for t, p in _running_defaults if t is not token]
+            default_db_path = _running_defaults[-1][1] if _running_defaults else None
         if not db_path:
             return
         with _instances_lock:

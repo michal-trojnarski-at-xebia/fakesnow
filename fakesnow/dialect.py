@@ -1,9 +1,13 @@
 """Parse Snowflake SQL with Snowflake-compatible syntax errors."""
 
+import re
+
 import snowflake.connector.errors
 import sqlglot
-from sqlglot import Expr
+from sqlglot import Expr, exp
 from sqlglot.errors import ParseError
+
+_DESCRIBE_TASK = re.compile(r"\s*(?:DESC|DESCRIBE)\s+(?=TASK\b)", re.IGNORECASE)
 
 
 def parse(command: str) -> list[Expr | None]:
@@ -17,6 +21,9 @@ def parse_one(command: str) -> Expr:
     try:
         return sqlglot.parse_one(command, read="snowflake")
     except ParseError as error:
+        # sqlglot can't parse DESCRIBE TASK, so hand it on as a command like the other task statements
+        if match := _DESCRIBE_TASK.match(command):
+            return exp.Command(this="DESCRIBE", expression=exp.Literal.string(command[match.end() :].strip()))
         raise syntax_error(error) from None
 
 

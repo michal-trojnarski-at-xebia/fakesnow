@@ -1,0 +1,201 @@
+import pytest
+from sqlglot import exp
+
+import fakesnow.dialect
+from fakesnow.tasks.statements import (
+    AlterTask,
+    CreateTask,
+    DescribeTask,
+    DropTask,
+    ExecuteTask,
+    ShowTasks,
+    TaskName,
+    TaskSyntaxError,
+    parse_task_statement,
+)
+
+
+def test_parse_create_task_with_schedule_and_body():
+    s = parse_task_statement("create task t1 schedule = '5 minute' as insert into x values (1)")
+    assert s == CreateTask(
+        name=TaskName(None, None, "T1"),
+        replace=False,
+        if_not_exists=False,
+        or_alter=False,
+        properties={"SCHEDULE": "5 minute"},
+        after=[],
+        condition=None,
+        definition="insert into x values (1)",
+        clone_of=None,
+    )
+
+
+def test_parse_create_task_name_and_replace():
+    s = parse_task_statement('create or replace task db1.s1."Child" after a as select 1')
+    assert isinstance(s, CreateTask)
+    assert s.name == TaskName("DB1", "S1", "Child")
+    assert s.replace
+
+
+def test_parse_create_task_after():
+    s = parse_task_statement("create task t after a, s1.b as select 1")
+    assert isinstance(s, CreateTask)
+    assert s.after == [TaskName(None, None, "A"), TaskName(None, "S1", "B")]
+
+
+def test_parse_create_task_condition():
+    s = parse_task_statement("create task t after a when cast(1 as int) = 1 as select 1")
+    assert isinstance(s, CreateTask)
+    assert s.condition == "cast(1 as int) = 1"
+
+
+def test_parse_create_task_definition_keeps_spelling():
+    s = parse_task_statement("create task t after a as select  'X'  from  Y;")
+    assert isinstance(s, CreateTask)
+    assert s.definition == "select  'X'  from  Y"
+
+
+def test_parse_create_task_finalize_is_property():
+    s = parse_task_statement("create task f1 finalize = r1 as select 1")
+    assert isinstance(s, CreateTask)
+    assert s.properties == {"FINALIZE": "R1"}
+
+
+def test_parse_create_task_property_values():
+    s = parse_task_statement("create task t warehouse = wh allow_overlapping_execution = true retries = 3 as select 1")
+    assert isinstance(s, CreateTask)
+    assert s.properties == {"WAREHOUSE": "WH", "ALLOW_OVERLAPPING_EXECUTION": "TRUE", "RETRIES": "3"}
+
+
+def test_parse_create_task_if_not_exists_and_or_alter():
+    s = parse_task_statement("create or alter task if not exists t schedule = '1 minute' as select 1")
+    assert isinstance(s, CreateTask)
+    assert s.or_alter
+    assert s.if_not_exists
+
+
+def test_parse_create_task_clone():
+    s = parse_task_statement("create task t2 clone t1")
+    assert isinstance(s, CreateTask)
+    assert s.clone_of == TaskName(None, None, "T1")
+
+
+def test_parse_alter_task_resume():
+    s = parse_task_statement("alter task t1 resume")
+    assert isinstance(s, AlterTask)
+    assert s.action == "RESUME"
+
+
+def test_parse_alter_task_suspend_if_exists():
+    s = parse_task_statement("alter task if exists t1 suspend")
+    assert isinstance(s, AlterTask)
+    assert s.action == "SUSPEND"
+    assert s.if_exists
+
+
+def test_parse_alter_task_add_after():
+    s = parse_task_statement("alter task t1 add after a, b")
+    assert isinstance(s, AlterTask)
+    assert s.action == "ADD_AFTER"
+    assert s.tasks == [TaskName(None, None, "A"), TaskName(None, None, "B")]
+
+
+def test_parse_alter_task_remove_after():
+    s = parse_task_statement("alter task t1 remove after a")
+    assert isinstance(s, AlterTask)
+    assert s.action == "REMOVE_AFTER"
+    assert s.tasks == [TaskName(None, None, "A")]
+
+
+def test_parse_alter_task_set():
+    s = parse_task_statement("alter task t1 set comment = 'x', user_task_timeout_ms = 10")
+    assert isinstance(s, AlterTask)
+    assert s.action == "SET"
+    assert s.properties == {"COMMENT": "x", "USER_TASK_TIMEOUT_MS": "10"}
+
+
+def test_parse_alter_task_unset():
+    s = parse_task_statement("alter task t1 unset comment, schedule")
+    assert isinstance(s, AlterTask)
+    assert s.action == "UNSET"
+    assert s.unset == ["COMMENT", "SCHEDULE"]
+
+
+def test_parse_alter_task_modify_as():
+    s = parse_task_statement("alter task t1 modify as select 2")
+    assert isinstance(s, AlterTask)
+    assert s.action == "MODIFY_AS"
+    assert s.text == "select 2"
+
+
+def test_parse_alter_task_modify_when():
+    s = parse_task_statement("alter task t1 modify when 1 = 2")
+    assert isinstance(s, AlterTask)
+    assert s.action == "MODIFY_WHEN"
+    assert s.text == "1 = 2"
+
+
+def test_parse_alter_task_remove_when():
+    s = parse_task_statement("alter task t1 remove when")
+    assert isinstance(s, AlterTask)
+    assert s.action == "REMOVE_WHEN"
+
+
+def test_parse_drop_task():
+    assert parse_task_statement("drop task if exists db1.s1.t1") == DropTask(TaskName("DB1", "S1", "T1"), True)
+
+
+def test_parse_describe_task():
+    assert parse_task_statement("desc task t1") == DescribeTask(TaskName(None, None, "T1"))
+    assert parse_task_statement("describe task t1") == DescribeTask(TaskName(None, None, "T1"))
+
+
+def test_parse_show_tasks_filters():
+    assert parse_task_statement(
+        "show terse tasks like 'T%' in schema db1.s1 starts with 'T' root only limit 5 from 'T1'"
+    ) == ShowTasks(
+        terse=True,
+        like="T%",
+        scope="SCHEMA",
+        scope_name=["DB1", "S1"],
+        starts_with="T",
+        root_only=True,
+        limit=5,
+        limit_from="T1",
+    )
+
+
+def test_parse_show_tasks_bare():
+    assert parse_task_statement("show tasks") == ShowTasks(False, None, None, None, None, False, None, None)
+
+
+def test_parse_show_tasks_in_account():
+    s = parse_task_statement("show tasks in account")
+    assert isinstance(s, ShowTasks)
+    assert s.scope == "ACCOUNT"
+    assert s.scope_name is None
+
+
+def test_parse_execute_task_using_config():
+    assert parse_task_statement("""execute task t1 using config = '{"a": 1}'""") == ExecuteTask(
+        TaskName(None, None, "T1"), '{"a": 1}'
+    )
+
+
+def test_parse_execute_task_without_config():
+    assert parse_task_statement("execute task t1") == ExecuteTask(TaskName(None, None, "T1"), None)
+
+
+def test_parse_non_task_statement_is_none():
+    assert parse_task_statement("create table t (x int)") is None
+
+
+def test_parse_malformed_task_statement_raises():
+    with pytest.raises(TaskSyntaxError) as excinfo:
+        parse_task_statement("alter task t1 frobnicate")
+    assert excinfo.value.errno == 1003
+    assert excinfo.value.sqlstate == "42000"
+
+
+def test_describe_task_parses_as_command():
+    assert isinstance(fakesnow.dialect.parse_one("desc task t1"), exp.Command)

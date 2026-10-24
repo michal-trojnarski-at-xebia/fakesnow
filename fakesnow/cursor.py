@@ -310,6 +310,11 @@ class FakeSnowflakeCursor:
             .transform(transforms.alter_session, copy=False)
             .transform(transforms.update_variables, variables=self._conn.variables, copy=False)
             .transform(transforms.current_version, copy=False)
+            .transform(
+                lambda e: transforms.session_context(e, self._conn.role, self._conn.warehouse),
+                copy=False,
+            )
+            .transform(transforms.system_cancel_all_queries, copy=False)
             .transform(transforms.set_schema, current_database=self._conn.database, copy=False)
             .transform(transforms.create_database, db_path=self._conn.db_path, copy=False)
             .transform(transforms.extract_comment_on_table, copy=False)
@@ -553,6 +558,12 @@ class FakeSnowflakeCursor:
             self._conn._schema = set_schema
             self._conn.schema_set = True
             result_sql = SQL_SUCCESS
+
+        elif set_role := transformed.args.get("set_role"):
+            self._conn.role = set_role
+
+        elif set_warehouse := transformed.args.get("set_warehouse"):
+            self._conn.warehouse = set_warehouse
 
         elif (set_query_tag := transformed.args.get("set_query_tag")) is not None:
             self._conn.query_tag = set_query_tag

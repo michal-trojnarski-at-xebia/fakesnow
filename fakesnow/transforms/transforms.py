@@ -189,6 +189,43 @@ def current_version(expression: Expr) -> Expr:
     return expression
 
 
+def session_context(expression: Expr, role: str, warehouse: str | None) -> Expr:
+    """Replace CURRENT_ROLE() and CURRENT_WAREHOUSE() with the session's values.
+
+    Example:
+        >>> import sqlglot
+        >>> sqlglot.parse_one("SELECT CURRENT_ROLE(), CURRENT_WAREHOUSE()", read="snowflake").transform(
+        ...     session_context, role="SYSADMIN", warehouse=None
+        ... ).sql()
+        "SELECT 'SYSADMIN', NULL"
+    """
+
+    if isinstance(expression, exp.CurrentRole):
+        return exp.Literal.string(role)
+
+    if isinstance(expression, exp.CurrentWarehouse):
+        return exp.Literal.string(warehouse) if warehouse else exp.Null()
+
+    return expression
+
+
+def system_cancel_all_queries(expression: Expr) -> Expr:
+    """Accept SYSTEM$CANCEL_ALL_QUERIES, which dbt runs on interrupt. Queries run synchronously, so none are running.
+
+    Example:
+        >>> import sqlglot
+        >>> sqlglot.parse_one("SELECT SYSTEM$CANCEL_ALL_QUERIES(1234)", read="snowflake").transform(
+        ...     system_cancel_all_queries
+        ... ).sql()
+        "SELECT '0 queries cancelled.'"
+    """
+
+    if isinstance(expression, exp.Anonymous) and str(expression.this).upper() == "SYSTEM$CANCEL_ALL_QUERIES":
+        return exp.Literal.string("0 queries cancelled.")
+
+    return expression
+
+
 # TODO: move this into a Dialect as a transpilation
 def create_database(expression: Expr, db_path: Path | None = None) -> Expr:
     """Transform create database to attach database.
@@ -1081,8 +1118,14 @@ def set_schema(expression: Expr, current_database: str | None) -> Expr:
         and isinstance(kind, exp.Var)
         and kind.name
     ):
+        if kind.name.upper() in ["ROLE", "WAREHOUSE"]:
+            # duckdb has no roles or warehouses, so the session only records them
+            assert expression.this, f"No identifier for USE expression {expression}"
+            new = SUCCESS_NOP.copy()
+            new.args[f"set_{kind.name.lower()}"] = expression.this.name.upper()
+            return new
+
         if kind.name.upper() not in ["SCHEMA", "DATABASE"]:
-            # duckdb has no roles or warehouses, so USE ROLE/WAREHOUSE is a NOP
             return SUCCESS_NOP
 
         assert expression.this, f"No identifier for USE expression {expression}"

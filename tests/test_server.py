@@ -892,3 +892,17 @@ def test_server_failed_start_restores_default_db_path(tmp_path: Path) -> None:
         pass
 
     assert server_module.default_db_path is None
+
+
+def test_server_current_role_from_login(server: dict) -> None:
+    with snowflake.connector.connect(**server, role="sysadmin") as conn:
+        cur = conn.cursor()
+        cur.execute("select current_role()")
+        assert cur.fetchall() == [("SYSADMIN",)]
+
+
+def test_server_current_warehouse_from_login(server: dict) -> None:
+    with snowflake.connector.connect(**server, warehouse="wh") as conn:
+        cur = conn.cursor()
+        cur.execute("select current_warehouse()")
+        assert cur.fetchall() == [("WH",)]

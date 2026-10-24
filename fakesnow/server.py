@@ -88,6 +88,8 @@ class ServerError(Exception):
 async def login_request(request: Request) -> JSONResponse:
     database = (d := request.query_params.get("databaseName")) and normalise_ident(d)
     schema = (s := request.query_params.get("schemaName")) and normalise_ident(s)
+    role = request.query_params.get("roleName")
+    warehouse = request.query_params.get("warehouse")
     body = await request.body()
     if request.headers.get("Content-Encoding") == "gzip":
         body = gzip.decompress(body)
@@ -100,7 +102,13 @@ async def login_request(request: Request) -> JSONResponse:
     token = secrets.token_urlsafe(32)
     logger.info(f"Session login {database=} {schema=} {nop_regexes=}")
     sessions[token] = fs.connect(
-        database, schema, nop_regexes=nop_regexes, autocommit=autocommit, session_parameters=session_params
+        database,
+        schema,
+        nop_regexes=nop_regexes,
+        autocommit=autocommit,
+        session_parameters=session_params,
+        role=role,
+        warehouse=warehouse,
     )
     return JSONResponse(
         {

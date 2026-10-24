@@ -47,6 +47,10 @@ class FakeSnowflakeConnection:
             "_FS_INFORMATION_SCHEMA" if schema.upper() == "INFORMATION_SCHEMA" else schema.upper()
         )
 
+        # roles and warehouses have no duckdb equivalent, so they are only tracked for current_role() etc
+        self.role: str = (kwargs.get("role") or "PUBLIC").upper()
+        self.warehouse: str | None = (w := kwargs.get("warehouse")) and w.upper()
+
         self.database_set = False
         self.schema_set = False
         self.db_path = Path(db_path) if db_path else None

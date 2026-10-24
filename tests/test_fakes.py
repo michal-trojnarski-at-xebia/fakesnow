@@ -17,6 +17,9 @@ from snowflake.connector.errors import ProgrammingError
 import fakesnow
 from tests.utils import dindent, indent
 
+# provisional: pending confirmation against live Snowflake
+CANCEL_ALL_QUERIES_RESULT = "0 queries cancelled."
+
 
 def test_alias_on_join(conn: snowflake.connector.SnowflakeConnection):
     *_, cur = conn.execute_string(
@@ -770,3 +773,18 @@ def test_insert_overwrite(dcur: snowflake.connector.cursor.DictCursor):
 
     dcur.execute("SELECT a FROM example")
     assert dcur.fetchall() == [{"A": 3}]
+
+
+def test_use_role_changes_current_role(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("use role analyst")
+    assert cur.execute("select current_role()").fetchall() == [("ANALYST",)]
+
+
+def test_use_warehouse_changes_current_warehouse(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("use warehouse compute_wh")
+    assert cur.execute("select current_warehouse()").fetchall() == [("COMPUTE_WH",)]
+
+
+def test_system_cancel_all_queries(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("select system$cancel_all_queries(1234)")
+    assert cur.fetchall() == [(CANCEL_ALL_QUERIES_RESULT,)]

@@ -325,3 +325,18 @@ def test_connect_with_query_tag_session_parameter(_fakesnow: None):
         cur = conn.cursor(snowflake.connector.cursor.DictCursor)
         cur.execute("SHOW PARAMETERS LIKE 'QUERY_TAG'")
         assert cur.fetchall()[0]["value"] == "dbt"
+
+
+def test_current_role_from_connect(_fakesnow: None):
+    with snowflake.connector.connect(role="sysadmin") as conn:
+        assert conn.cursor().execute("select current_role()").fetchall() == [("SYSADMIN",)]
+
+
+def test_current_warehouse_from_connect(_fakesnow: None):
+    with snowflake.connector.connect(warehouse="wh") as conn:
+        assert conn.cursor().execute("select current_warehouse()").fetchall() == [("WH",)]
+
+
+def test_current_role_and_warehouse_defaults(_fakesnow: None):
+    with snowflake.connector.connect() as conn:
+        assert conn.cursor().execute("select current_role(), current_warehouse()").fetchall() == [("PUBLIC", None)]

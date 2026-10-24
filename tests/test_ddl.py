@@ -264,6 +264,15 @@ def test_alter_table_swap_with_missing_table_leaves_tables_intact(
     assert cur.fetchall() == [(1,)]
 
 
+def test_alter_table_swap_with_itself_leaves_table_intact(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
+    cur.execute("create table a (x int)")
+    cur.execute("insert into a values (1)")
+    with pytest.raises(snowflake.connector.errors.ProgrammingError):
+        cur.execute("alter table a swap with schema1.a")
+    cur.execute("select x from a")
+    assert cur.fetchall() == [(1,)]
+
+
 def test_alter_table_swap_with_qualified_second_in_session_schema(
     cur: snowflake.connector.cursor.SnowflakeCursor,
 ) -> None:

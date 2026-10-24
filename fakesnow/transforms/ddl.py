@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import secrets
 
+import snowflake.connector.errors
 import sqlglot
 from sqlglot import Expr, exp
 
@@ -93,6 +94,11 @@ def swap_table(expression: Expr, current_database: str | None, current_schema: s
 
     if location(first) != location(second):
         raise NotImplementedError("ALTER TABLE ... SWAP WITH across databases or schemas")
+    if first.name.upper() == second.name.upper():
+        # duckdb names are case-insensitive, so renaming the table away would leave the next rename without a source
+        raise snowflake.connector.errors.ProgrammingError(
+            msg=f"SQL compilation error:\nCannot swap table '{first.name}' with itself.", errno=2003
+        )
 
     # rename to takes an unqualified name, and the new name must be in the same schema as the table
     tmp = f"_fs_swap_{secrets.token_hex(8)}"

@@ -17,8 +17,10 @@ import secrets
 
 import snowflake.connector.errors
 import sqlglot
+from duckdb import DuckDBPyConnection
 from sqlglot import Expr, exp
 
+from fakesnow.temporary import TemporaryObjects
 from fakesnow.transforms.transforms import SUCCESS_NOP
 
 
@@ -64,12 +66,24 @@ def alter_table_add_multiple_columns(
     return alter_statements
 
 
-def swap_table(expression: Expr, current_database: str | None, current_schema: str | None) -> list[Expr]:
+_KIND_SQL = """
+    SELECT kind FROM _fs_global._fs_information_schema._fs_show_objects
+    WHERE database_name = ? AND schema_name = ? AND name = ?
+"""
+
+
+def swap_table(
+    expression: Expr,
+    current_database: str | None,
+    current_schema: str | None,
+    duck_conn: DuckDBPyConnection,
+    temporaries: TemporaryObjects,
+) -> list[Expr]:
     """Transform ALTER TABLE a SWAP WITH b, which duckdb lacks, into renames through a temporary name.
 
     a -> tmp, b -> a, tmp -> b. The b -> a rename carries swap_metadata so the cursor can swap the tables' recorded
-    comments and text lengths, which are keyed by name. Both tables are read first so that a missing one fails before
-    anything is renamed.
+    comments and text lengths, which are keyed by name. Both operands are checked to be tables, and read so that a
+    missing one fails, before anything is renamed.
     """
     if not (
         isinstance(expression, exp.Alter)
@@ -83,11 +97,11 @@ def swap_table(expression: Expr, current_database: str | None, current_schema: s
     first = expression.this
     second = actions[0].this
 
-    def location(table: exp.Table) -> tuple[str | None, str | None]:
-        # unquoted identifiers are case-insensitive, quoted ones are not
-        def fold(part: exp.Expr) -> str:
-            return part.name if part.args.get("quoted") else part.name.upper()
+    # unquoted identifiers are case-insensitive, quoted ones are not
+    def fold(part: exp.Expr) -> str:
+        return part.name if part.args.get("quoted") else part.name.upper()
 
+    def location(table: exp.Table) -> tuple[str | None, str | None]:
         catalog = table.args.get("catalog")
         schema = table.args.get("db")
         return (fold(catalog) if catalog else current_database, fold(schema) if schema else current_schema)
@@ -99,6 +113,19 @@ def swap_table(expression: Expr, current_database: str | None, current_schema: s
         raise snowflake.connector.errors.ProgrammingError(
             msg=f"SQL compilation error:\nCannot swap table '{first.name}' with itself.", errno=2003
         )
+    catalog, schema = location(first)
+    for operand in (first, second):
+        name = fold(operand.this)
+        # a temporary object shadows a permanent one of the same name
+        kind = temporaries.kind(name, catalog, schema) if catalog and schema else None
+        if not kind and (row := duck_conn.execute(_KIND_SQL, [catalog, schema, name]).fetchone()):
+            kind = row[0]
+        if kind and kind != "TABLE":
+            # duckdb would rename a view as though it were a table
+            raise snowflake.connector.errors.ProgrammingError(
+                msg=f"SQL compilation error:\nObject found is of type '{kind}', not specified type 'TABLE'.",
+                errno=2203,
+            )
 
     # rename to takes an unqualified name, and the new name must be in the same schema as the table
     tmp = f"_fs_swap_{secrets.token_hex(8)}"

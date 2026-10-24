@@ -432,7 +432,9 @@ class FakeSnowflakeCursor:
         if len(overwrite_result) > 1:
             return overwrite_result
 
-        swap_result = transforms.swap_table(expression, self._conn.database, self._conn.schema)
+        swap_result = transforms.swap_table(
+            expression, self._conn.database, self._conn.schema, self._duck_conn, self._conn.temporaries
+        )
         if len(swap_result) > 1:
             return swap_result
 

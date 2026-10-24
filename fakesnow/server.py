@@ -97,7 +97,11 @@ def set_default_db_path(db_path: str | None) -> Callable[[], None]:
             del _server_counts[key]
             fs = _instances.pop(key, None)
         if fs:
-            fs.duck_conn.close()
+            # closes sessions still open on the instance, so their connections don't keep its database files attached
+            fs.close()
+            for session_token, conn in list(sessions.items()):
+                if conn.is_closed():
+                    sessions.pop(session_token, None)
 
     return restore
 

@@ -23,6 +23,7 @@ from pandas.testing import assert_frame_equal
 from snowflake.connector.cursor import ResultMetadata
 
 import fakesnow
+from fakesnow.fakes import FakeSnowflakeConnection
 from fakesnow.instance import FakeSnow
 from tests.utils import indent
 
@@ -901,6 +902,30 @@ def test_server_stopping_one_of_two_servers_on_a_db_path_keeps_the_other_serving
         cur = conn.cursor()
         cur.execute("select 1")
         assert cur.fetchall() == [(1,)]
+
+
+def _stop_server_with_session_open(db_path: Path) -> tuple[str, FakeSnowflakeConnection]:
+    """Stop a server on db_path while a client's session is open, and return the session's token and connection."""
+    with fakesnow.server(db_path=str(db_path)) as kwargs:
+        # imported once the server is running, since importing it rebinds fakesnow.server to the module
+        server_module = importlib.import_module("fakesnow.server")
+        before = set(server_module.sessions)
+        # the client stays connected, so its session is still open as the server stops
+        client = snowflake.connector.connect(**kwargs, database="db1", schema="s1")
+        [(token, conn)] = [(t, c) for t, c in server_module.sessions.items() if t not in before]
+    del client
+    return token, conn
+
+
+def test_server_stopping_on_db_path_closes_open_sessions(tmp_path: Path) -> None:
+    # the session's duckdb connection would otherwise keep the database files attached to a closed instance
+    _, conn = _stop_server_with_session_open(tmp_path)
+    assert conn.is_closed()
+
+
+def test_server_stopping_on_db_path_forgets_open_sessions(tmp_path: Path) -> None:
+    token, _ = _stop_server_with_session_open(tmp_path)
+    assert token not in importlib.import_module("fakesnow.server").sessions
 
 
 def test_db_path_instance_is_shared_by_concurrent_first_logins(tmp_path: Path) -> None:

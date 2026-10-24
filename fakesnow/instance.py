@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import weakref
 from typing import Any
 
 import duckdb
@@ -31,6 +32,8 @@ class FakeSnow:
         self.owners = Owners()
         # connecting may create the database and schema, which concurrent connections would race on
         self._connect_lock = threading.Lock()
+        # each has its own duckdb connection, which keeps the attached database files open until it is closed
+        self._connections: weakref.WeakSet[fakes.FakeSnowflakeConnection] = weakref.WeakSet()
         # SQLGlot's DuckDB transpilation still emits legacy arrow lambdas; keep the
         # DuckDB 2.0 compatibility setting enabled.
         self.duck_conn = duckdb.connect(database=":memory:", config={"lambda_syntax": "ENABLE_SINGLE_ARROW"})
@@ -57,7 +60,7 @@ class FakeSnow:
         # and to make connections thread-safe see
         # https://duckdb.org/docs/api/python/overview.html#using-connections-in-parallel-python-programs
         with self._connect_lock:
-            return fakes.FakeSnowflakeConnection(
+            conn = fakes.FakeSnowflakeConnection(
                 self.duck_conn.cursor(),
                 self.results_cache,
                 database,
@@ -69,3 +72,13 @@ class FakeSnow:
                 owners=self.owners,
                 **kwargs,
             )
+            self._connections.add(conn)
+            return conn
+
+    def close(self) -> None:
+        """Close the instance and every connection to it, releasing the database files they have attached."""
+        with self._connect_lock:
+            for conn in list(self._connections):
+                if not conn.is_closed():
+                    conn.close()
+            self.duck_conn.close()

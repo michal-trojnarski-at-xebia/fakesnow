@@ -1,11 +1,13 @@
 # pyright: reportOptionalMemberAccess=false
 
 import shutil
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 import snowflake.connector
+from snowflake.connector.cursor import SnowflakeCursor
 
 import fakesnow
 
@@ -16,6 +18,9 @@ if TYPE_CHECKING:
 
 PROJECT = Path(__file__).parent / "dbt_project"
 
+# each class runs a dbt project once and its tests check the outcome, so they share the
+# fakesnow patch or server, which is why the fixtures are class scoped
+
 
 def copy_project(tmp_path: Path) -> Path:
     # dbt writes target/ and logs/ into the project dir, so run from a copy
@@ -24,9 +29,8 @@ def copy_project(tmp_path: Path) -> Path:
     return project
 
 
-def append_seed_row(project: Path, row: str) -> None:
-    with (project / "seeds" / "raw_orders.csv").open("a") as f:
-        f.write(f"{row}\n")
+def write_seed_rows(project: Path, *rows: str) -> None:
+    (project / "seeds" / "raw_orders.csv").write_text("\n".join(["id,customer,amount,updated_at", *rows, ""]))
 
 
 def run_dbt(project_dir: Path, *args: str) -> "dbtRunnerResult":
@@ -35,43 +39,109 @@ def run_dbt(project_dir: Path, *args: str) -> "dbtRunnerResult":
     return result
 
 
-def test_dbt_build_twice_patch_mode(tmp_path: Path) -> None:
-    project = copy_project(tmp_path)
-    with fakesnow.patch():
-        for _ in range(2):
+class TestBuildTwicePatchMode:
+    @pytest.fixture(scope="class")
+    def cur(self, tmp_path_factory: pytest.TempPathFactory) -> Iterator[SnowflakeCursor]:
+        project = copy_project(tmp_path_factory.mktemp("dbt"))
+        with fakesnow.patch():
+            for _ in range(2):
+                run_dbt(project, "seed")
+                run_dbt(project, "run")
+                run_dbt(project, "snapshot")
+                run_dbt(project, "test")
+            with snowflake.connector.connect(database="dbt_db", schema="analytics") as conn:
+                yield conn.cursor()
+
+    # the seed is unchanged, so the second run adds nothing: merge and append filter on rows newer
+    # than the max, delete+insert replaces the newest row, and the snapshot has no changes to record
+    @pytest.mark.parametrize("table", ["inc_merge", "inc_delete_insert", "inc_append", "snapshots.orders_snap"])
+    def test_second_run_keeps_rows(self, cur: SnowflakeCursor, table: str) -> None:
+        assert cur.execute(f"select count(*) from {table}").fetchall() == [(3,)]
+
+
+class TestIncrementalPatchMode:
+    @pytest.fixture(scope="class")
+    def cur(self, tmp_path_factory: pytest.TempPathFactory) -> Iterator[SnowflakeCursor]:
+        project = copy_project(tmp_path_factory.mktemp("dbt"))
+        with fakesnow.patch():
             run_dbt(project, "seed")
             run_dbt(project, "run")
             run_dbt(project, "snapshot")
-            run_dbt(project, "test")
-        with snowflake.connector.connect(database="dbt_db", schema="analytics") as conn:
-            cur = conn.cursor()
-            assert cur.execute("select count(*) from inc_merge").fetchall() == [(3,)]
-            assert cur.execute("select count(*) from inc_delete_insert").fetchall() == [(3,)]
-            # append re-inserts rows newer than the max, of which there are none on the second run
-            assert cur.execute("select count(*) from inc_append").fetchall() == [(3,)]
-            assert cur.execute("select count(*) from snapshots.orders_snap").fetchall() == [(3,)]
+            # alice's order is updated and dave's is new, both newer than the rows already loaded
+            write_seed_rows(
+                project,
+                "1,alice,99,2024-01-05 00:00:00",
+                "2,bob,20.0,2024-01-02 00:00:00",
+                "3,carol,7.25,2024-01-03 00:00:00",
+                "4,dave,40,2024-01-04 00:00:00",
+            )
+            run_dbt(project, "seed")
+            run_dbt(project, "run")
+            run_dbt(project, "snapshot")
+            with snowflake.connector.connect(database="dbt_db", schema="analytics") as conn:
+                yield conn.cursor()
+
+    def test_merge_updates_and_inserts(self, cur: SnowflakeCursor) -> None:
+        assert cur.execute("select id, amount from inc_merge order by id").fetchall() == [
+            (1, 99.0),
+            (2, 20.0),
+            (3, 7.25),
+            (4, 40.0),
+        ]
+
+    def test_append_inserts_only_new_rows(self, cur: SnowflakeCursor) -> None:
+        # alice's original order stays alongside her update
+        assert cur.execute("select id, amount from inc_append order by id, amount").fetchall() == [
+            (1, 10.5),
+            (1, 99.0),
+            (2, 20.0),
+            (3, 7.25),
+            (4, 40.0),
+        ]
+
+    def test_delete_insert_replaces_rows(self, cur: SnowflakeCursor) -> None:
+        assert cur.execute("select id, amount from inc_delete_insert order by id").fetchall() == [
+            (1, 99.0),
+            (2, 20.0),
+            (3, 7.25),
+            (4, 40.0),
+        ]
+
+    def test_snapshot_records_new_version(self, cur: SnowflakeCursor) -> None:
+        assert cur.execute(
+            "select id, amount, dbt_valid_to is null from snapshots.orders_snap order by id, dbt_valid_from"
+        ).fetchall() == [
+            (1, 10.5, False),
+            (1, 99.0, True),
+            (2, 20.0, True),
+            (3, 7.25, True),
+            (4, 40.0, True),
+        ]
 
 
-def test_dbt_incremental_picks_up_new_rows_patch_mode(tmp_path: Path) -> None:
-    project = copy_project(tmp_path)
-    with fakesnow.patch():
-        run_dbt(project, "seed")
-        run_dbt(project, "run")
-        append_seed_row(project, "4,dave,40,2024-01-04 00:00:00")
-        run_dbt(project, "seed")
-        run_dbt(project, "run")
-        with snowflake.connector.connect(database="dbt_db", schema="analytics") as conn:
-            assert conn.cursor().execute("select count(*) from inc_merge").fetchall() == [(4,)]
+# a regression in server mode surfaces as a 500 the connector retries indefinitely, rather than an error
+@pytest.mark.timeout(180)
+class TestBuildTwiceServerMode:
+    @pytest.fixture(scope="class")
+    def server(self, tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[Path, dict]]:
+        tmp_path = tmp_path_factory.mktemp("dbt")
+        project = copy_project(tmp_path)
+        db_path = tmp_path / "db"
+        db_path.mkdir()
+        with fakesnow.server(db_path=str(db_path)) as kwargs, pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setenv("FAKESNOW_HOST", kwargs["host"])
+            monkeypatch.setenv("FAKESNOW_PORT", str(kwargs["port"]))
+            monkeypatch.setenv("FAKESNOW_PROTOCOL", "http")
+            for _ in range(2):
+                run_dbt(project, "build")
+            yield project, kwargs
 
+    @pytest.mark.parametrize("table", ["inc_merge", "inc_delete_insert", "inc_append", "snapshots.orders_snap"])
+    def test_second_build_keeps_rows(self, server: tuple[Path, dict], table: str) -> None:
+        _, kwargs = server
+        with snowflake.connector.connect(**kwargs, database="dbt_db", schema="analytics") as conn:
+            assert conn.cursor().execute(f"select count(*) from {table}").fetchall() == [(3,)]
 
-def test_dbt_build_twice_server_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    project = copy_project(tmp_path)
-    db_path = tmp_path / "db"
-    db_path.mkdir()
-    with fakesnow.server(db_path=str(db_path)) as kwargs:
-        monkeypatch.setenv("FAKESNOW_HOST", kwargs["host"])
-        monkeypatch.setenv("FAKESNOW_PORT", str(kwargs["port"]))
-        monkeypatch.setenv("FAKESNOW_PROTOCOL", "http")
-        for _ in range(2):
-            run_dbt(project, "build")
+    def test_docs_generate(self, server: tuple[Path, dict]) -> None:
+        project, _ = server
         run_dbt(project, "docs", "generate")

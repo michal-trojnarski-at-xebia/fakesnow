@@ -63,11 +63,12 @@ def alter_table_add_multiple_columns(
     return alter_statements
 
 
-def swap_table(expression: Expr) -> list[Expr]:
+def swap_table(expression: Expr, current_database: str | None, current_schema: str | None) -> list[Expr]:
     """Transform ALTER TABLE a SWAP WITH b, which duckdb lacks, into renames through a temporary name.
 
     a -> tmp, b -> a, tmp -> b. The b -> a rename carries swap_comments so the cursor can swap the
-    tables' recorded comments, which are keyed by name.
+    tables' recorded comments, which are keyed by name. Both tables are read first so that a missing one fails
+    before anything is renamed.
     """
     if not (
         isinstance(expression, exp.Alter)
@@ -80,7 +81,17 @@ def swap_table(expression: Expr) -> list[Expr]:
 
     first = expression.this
     second = actions[0].this
-    if (second.catalog and second.catalog != first.catalog) or (second.db and second.db != first.db):
+
+    def location(table: exp.Table) -> tuple[str | None, str | None]:
+        # unquoted identifiers are case-insensitive, quoted ones are not
+        def fold(part: exp.Expr) -> str:
+            return part.name if part.args.get("quoted") else part.name.upper()
+
+        catalog = table.args.get("catalog")
+        schema = table.args.get("db")
+        return (fold(catalog) if catalog else current_database, fold(schema) if schema else current_schema)
+
+    if location(first) != location(second):
         raise NotImplementedError("ALTER TABLE ... SWAP WITH across databases or schemas")
 
     # rename to takes an unqualified name, and the new name must be in the same schema as the table
@@ -99,7 +110,8 @@ def swap_table(expression: Expr) -> list[Expr]:
 
     second_to_first = rename(second.this, first.this)
     second_to_first.set("swap_comments", True)
-    return [rename(first.this, tmp), second_to_first, rename(tmp, second.this)]
+    probes = [exp.select("1").from_(t.copy()).where(exp.false()) for t in (first, second)]
+    return [*probes, rename(first.this, tmp), second_to_first, rename(tmp, second.this)]
 
 
 def _is_alter_table_cluster_by(expression: Expr) -> bool:

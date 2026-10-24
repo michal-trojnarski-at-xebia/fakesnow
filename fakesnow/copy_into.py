@@ -17,8 +17,10 @@ from sqlglot import Expr, exp
 import fakesnow.transforms.stage as stage
 from fakesnow import logger
 from fakesnow.params import MutableParams, pop_qmark_param
+from fakesnow.temporary import TemporaryObjects
 from fakesnow.transforms.file_format import lookup_file_format
 from fakesnow.transforms.options import parse_options
+from fakesnow.transforms.temporary import resolve_table
 
 Params = Sequence[Any] | dict[Any, Any]
 
@@ -47,6 +49,7 @@ def copy_into(
     current_schema: str | None,
     expr: exp.Copy,
     table_stages: stage.TableStages,
+    temporaries: TemporaryObjects,
     params: MutableParams | None = None,
 ) -> str:
     cparams = _params(
@@ -90,6 +93,8 @@ def copy_into(
                 parquet_columns = {url: _get_parquet_column_names(url, duck_conn) for url in urls}
                 parquet_info = ParquetLoadInfo(parquet_columns, is_single_variant=True)
 
+    # the stage and load history use the Snowflake name, the rows go to the temporary table it may name
+    resolve_table(table, temporaries, current_database, current_schema)
     inserts = _inserts(expr, cparams, urls, parquet_info)
 
     histories: list[LoadHistoryRecord] = []

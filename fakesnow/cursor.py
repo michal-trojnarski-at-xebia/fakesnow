@@ -528,6 +528,7 @@ class FakeSnowflakeCursor:
                     self._conn.schema,
                     transformed,
                     self._conn.table_stages,
+                    self._conn.temporaries,
                     params,
                 )
             elif transformed.args.get("create_file_format_name"):

@@ -56,19 +56,8 @@ def temporary_objects(
         and not _is_target(expression)
         and not _is_other_kind(expression)
         and not _is_cte(expression)
-        and (owner := temporaries.owner(expression.name))
     ):
-        catalog = expression.catalog or current_database
-        schema = expression.db or current_schema
-        if owner == (catalog, schema):
-            # An unqualified reference already resolves to the temporary object, which DuckDB searches first.
-            if expression.args.get("db"):
-                expression.set("catalog", exp.to_identifier("temp"))
-                expression.set("db", exp.to_identifier("main"))
-        elif catalog and schema:
-            # Qualify fully so the reference resolves to a permanent object rather than the temporary one.
-            expression.set("catalog", exp.to_identifier(catalog))
-            expression.set("db", exp.to_identifier(schema))
+        resolve_table(expression, temporaries, current_database, current_schema)
 
     if (
         isinstance(expression, exp.Column)
@@ -83,10 +72,30 @@ def temporary_objects(
     return expression
 
 
+def resolve_table(
+    table: exp.Table, temporaries: TemporaryObjects, current_database: str | None, current_schema: str | None
+) -> None:
+    """Point a table reference at the temporary object it names in Snowflake, or away from one it doesn't."""
+    if not (owner := temporaries.owner(table.name)):
+        return
+    catalog = table.catalog or current_database
+    schema = table.db or current_schema
+    if owner == (catalog, schema):
+        # An unqualified reference already resolves to the temporary object, which DuckDB searches first.
+        if table.args.get("db"):
+            table.set("catalog", exp.to_identifier("temp"))
+            table.set("db", exp.to_identifier("main"))
+    elif catalog and schema:
+        # Qualify fully so the reference resolves to a permanent object rather than the temporary one.
+        table.set("catalog", exp.to_identifier(catalog))
+        table.set("db", exp.to_identifier(schema))
+
+
 def _is_target(table: exp.Table) -> bool:
     """Whether table is the object a CREATE makes or a COPY loads.
 
-    A permanent CREATE must not redirect to temp, and COPY resolves its target's stage by its Snowflake name.
+    A permanent CREATE must not redirect to temp, and COPY resolves its target's stage by its Snowflake name before
+    resolving the target itself.
     """
     parent = table.parent.parent if isinstance(table.parent, exp.Schema) else table.parent
     return isinstance(parent, (exp.Create, exp.Copy)) and (parent.this is table or parent.this.this is table)

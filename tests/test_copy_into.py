@@ -1354,6 +1354,32 @@ def test_load_history_follows_swapped_tables(dcur: snowflake.connector.cursor.Di
     assert dcur.fetchall()[0]["status"] == "LOADED"
 
 
+def test_copy_into_qualified_temporary_table_loads_it(
+    dcur: snowflake.connector.cursor.DictCursor, s3_client: S3Client
+) -> None:
+    create_table(dcur)
+    dcur.execute("CREATE TEMPORARY TABLE db1.schema1.table1 (a INT, b INT)")
+    bucket = str(uuid.uuid4())
+    upload_file(s3_client, "1,2", bucket=bucket, key="foo.csv")
+    dcur.execute(f"COPY INTO db1.schema1.table1 FROM 's3://{bucket}/' FILES=('foo.csv')")
+    dcur.execute("SELECT a, b FROM db1.schema1.table1")
+    assert dcur.fetchall() == [{"A": 1, "B": 2}]
+
+
+def test_copy_into_qualified_temporary_table_leaves_shadowed_table(
+    dcur: snowflake.connector.cursor.DictCursor, s3_client: S3Client
+) -> None:
+    create_table(dcur)
+    dcur.execute("CREATE TEMPORARY TABLE db1.schema1.table1 (a INT, b INT)")
+    bucket = str(uuid.uuid4())
+    upload_file(s3_client, "1,2", bucket=bucket, key="foo.csv")
+    dcur.execute(f"COPY INTO db1.schema1.table1 FROM 's3://{bucket}/' FILES=('foo.csv')")
+    # drops the temporary table, which shadows the permanent one
+    dcur.execute("DROP TABLE db1.schema1.table1")
+    dcur.execute("SELECT count(*) AS n FROM db1.schema1.table1")
+    assert dcur.fetchall() == [{"N": 0}]
+
+
 def test_params_csv_default():
     # Snowflake defaults are
     # TYPE='CSV' SKIP_HEADER = 0 FIELD_OPTIONALLY_ENCLOSED_BY = NONE FIELD_DELIMITER = ',' NULL_IF = '\N' COMPRESSION = 'AUTO'

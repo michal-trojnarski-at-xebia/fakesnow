@@ -377,7 +377,8 @@ def show_grants(
         raise NotImplementedError(expression.sql(dialect="snowflake"))
 
     # fill in unqualified leading parts from the session
-    session = [normalise_ident(d) if d else None for d in (current_database, current_schema)]
+    # the session's names are already resolved, so quoted ones keep their case
+    session = [current_database, current_schema]
     qualifiers = session[: {"TABLE": 2, "VIEW": 2, "SCHEMA": 1, "DATABASE": 0, "": 2}[kind]]
     leading = qualifiers[: len(qualifiers) + 1 - len(parts)]
     if not all(leading):

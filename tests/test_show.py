@@ -879,6 +879,14 @@ def test_show_grants_on_temporary_table_reports_owner_after_role_change(
     assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.TT", role="SYSADMIN")]
 
 
+def test_show_grants_resolves_unqualified_name_in_quoted_schema(dcur: snowflake.connector.cursor.DictCursor):
+    dcur.execute('create schema db1."Mixed"')
+    dcur.execute('use schema db1."Mixed"')
+    dcur.execute("create table t1 (id int)")
+    dcur.execute("show grants on table t1")
+    assert dcur.fetchall() == [_ownership("TABLE", "DB1.Mixed.T1")]
+
+
 def test_show_grants_on_missing_table(dcur: snowflake.connector.cursor.DictCursor):
     with pytest.raises(snowflake.connector.errors.ProgrammingError, match="does not exist or not authorized"):
         dcur.execute("show grants on table db1.schema1.nope")

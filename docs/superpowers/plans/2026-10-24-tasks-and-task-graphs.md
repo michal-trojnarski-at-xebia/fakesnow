@@ -500,3 +500,7 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
     `scheduling_mode` and `execute_as_user`, and the missing-database error text (`DATABASE_DOES_NOT_EXIST`).
 14. `SHOW TASKS ... ROOT ONLY`: whether a finalizer (no predecessors, but not a root) is included (fakesnow: included).
 15. `SHOW TASKS IN SCHEMA <missing>`: no rows or an error (fakesnow: no rows; a missing database raises).
+16. EXECUTE TASK runs (`fakesnow/tasks/runner.py`): whether a suspended finalizer is skipped like a suspended child
+    (fakesnow: skipped); whether TASK_HISTORY `CONFIG` is set on every task row of the run or only the root's
+    (fakesnow: every row); a skipped task's `QUERY_ID` and `QUERY_START_TIME` (fakesnow: NULL); a child's
+    `SCHEDULED_TIME` (fakesnow: when it became ready to run); a `WHEN` that raises (fakesnow: `FAILED`).

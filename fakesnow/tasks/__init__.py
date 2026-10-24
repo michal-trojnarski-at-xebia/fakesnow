@@ -9,7 +9,8 @@ import duckdb
 from duckdb import DuckDBPyConnection
 from sqlglot import Expr, exp
 
-from fakesnow.tasks.catalog import TaskCatalog
+from fakesnow.tasks.catalog import TaskCatalog, status_sql
+from fakesnow.tasks.runner import EXECUTED, run_graph
 from fakesnow.tasks.show import describe_task_sql, show_tasks_sql
 from fakesnow.tasks.statements import (
     AlterTask,
@@ -17,6 +18,7 @@ from fakesnow.tasks.statements import (
     DescribeTask,
     DropTask,
     EnableDependents,
+    ExecuteTask,
     ShowTasks,
     TaskStatement,
     parse_task_name,
@@ -32,6 +34,7 @@ _COMMANDS: dict[type, str] = {
     CreateTask: "CREATE TASK",
     AlterTask: "ALTER TASK",
     DropTask: "DROP TASK",
+    ExecuteTask: "EXECUTE TASK",
     EnableDependents: "SYSTEM$TASK_DEPENDENTS_ENABLE",
     ShowTasks: "SHOW TASKS",
     DescribeTask: "DESCRIBE TASK",
@@ -87,6 +90,10 @@ def execute(statement: TaskStatement, conn: FakeSnowflakeConnection) -> str:
         catalog.enable_dependents(statement.name)
         column = f"{_ENABLE_DEPENDENTS}('{statement.argument}')".replace('"', '""')
         return f'SELECT NULL AS "{column}"'
+    if isinstance(statement, ExecuteTask):
+        root = catalog.require(statement.name)
+        run_graph(conn, catalog, root, statement.config)
+        return status_sql(EXECUTED, root.name)
     if isinstance(statement, ShowTasks):
         return show_tasks_sql(statement, conn._duck_conn, catalog.current_database, catalog.current_schema)  # noqa: SLF001
     if isinstance(statement, DescribeTask):

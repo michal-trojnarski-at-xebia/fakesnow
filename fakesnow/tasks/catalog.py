@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 import json
 import uuid
 from dataclasses import dataclass, field, replace
@@ -202,7 +203,7 @@ class TaskCatalog:
         return None
 
     def graph(self, root: Task) -> list[Task]:
-        """The root, its descendants in an order where predecessors come first, then its finalizer."""
+        """The root, its descendants in topological order with ties broken by name, then its finalizer."""
         tasks = self._schema_tasks(root.database, root.schema_name)
         members = {root.name}
         pending = [t for t in tasks if t.predecessors]
@@ -213,16 +214,24 @@ class TaskCatalog:
                 if t.name not in members and members.intersection(t.predecessors):
                     members.add(t.name)
                     grew = True
-        remaining = [t for t in tasks if t.name in members and t.name != root.name]
-        ordered = [root]
-        placed = {root.name}
-        while remaining:
-            ready = [t for t in remaining if all(p in placed or p not in members for p in t.predecessors)]
-            if not ready:  # a cycle, which the rules prevent
-                ready = remaining
-            ordered.extend(ready)
-            placed.update(t.name for t in ready)
-            remaining = [t for t in remaining if t not in ready]
+        # Kahn's algorithm, from the root as given, which may not be saved yet
+        by_name = {t.name: t for t in tasks if t.name in members} | {root.name: root}
+        waiting = {t.name: len(members.intersection(t.predecessors)) for t in by_name.values()}
+        children: dict[str, list[str]] = {name: [] for name in by_name}
+        for t in by_name.values():
+            for pred in members.intersection(t.predecessors):
+                children[pred].append(t.name)
+        ready = [root.name]
+        ordered: list[Task] = []
+        while ready:
+            name = heapq.heappop(ready)
+            ordered.append(by_name[name])
+            del waiting[name]
+            for child in children[name]:
+                waiting[child] -= 1
+                if waiting[child] == 0:
+                    heapq.heappush(ready, child)
+        ordered.extend(by_name[name] for name in sorted(waiting))  # a cycle, which the rules prevent
         finalizer = self.finalizer_of(root)
         if finalizer:
             ordered.append(finalizer)
@@ -242,7 +251,7 @@ class TaskCatalog:
         existing = self.get(database, schema, name)
         if existing and not (stmt.replace or stmt.or_alter):
             if stmt.if_not_exists:
-                return _status(EXISTS, name)
+                return status_sql(EXISTS, name)
             raise _error(ALREADY_EXISTS.format(fqname=existing.fqname), 2002, "42710")
         if existing and not stmt.replace:
             # altering keeps the identity, state and history, and resets what the statement leaves out
@@ -261,21 +270,21 @@ class TaskCatalog:
             else [(database, schema, p) for p in task.predecessors]
         )
         self._store(task, existing, after)
-        return _status(CREATED, name)
+        return status_sql(CREATED, name)
 
     def alter(self, stmt: AlterTask) -> str:
         database, schema, name = self.resolve(stmt.name)
         task = self.get(database, schema, name)
         if task is None:
             if stmt.if_exists:
-                return _status(ALTERED, name)
+                return status_sql(ALTERED, name)
             raise _error(DOES_NOT_EXIST.format(fqname=f"{database}.{schema}.{name}"), 2003, "02000")
         if stmt.action in ("RESUME", "SUSPEND"):
             # a root can always be resumed or suspended, a child only while its root is suspended
             if self.root_of(task).name != task.name:
                 self.check_root_suspended(task)
             self.save(_resumed(task) if stmt.action == "RESUME" else _suspended(task, USER_SUSPENDED))
-            return _status(ALTERED, name)
+            return status_sql(ALTERED, name)
 
         new = replace(task, predecessors=list(task.predecessors), properties=dict(task.properties))
         new.session_parameters = dict(task.session_parameters)
@@ -308,7 +317,7 @@ class TaskCatalog:
         if stmt.action != "ADD_AFTER":
             after = [(database, schema, p) for p in new.predecessors]
         self._store(new, task, after)
-        return _status(ALTERED, name)
+        return status_sql(ALTERED, name)
 
     def enable_dependents(self, name: TaskName) -> None:
         """Resume the task and all its dependents."""
@@ -399,7 +408,7 @@ class TaskCatalog:
         task = self.get(database, schema, name)
         if task is None:
             if stmt.if_exists:
-                return _status(DROP_MISSING, name)
+                return status_sql(DROP_MISSING, name)
             raise _error(DOES_NOT_EXIST.format(fqname=f"{database}.{schema}.{name}"), 2003, "02000")
         self.check_root_suspended(task)
         # dependents of the dropped task become standalone
@@ -410,16 +419,23 @@ class TaskCatalog:
         if finalizer:
             self.save(_suspended(replace(finalizer, finalize=None), FINALIZER_BECAME_ROOT))
         self.delete(database, schema, name)
-        return _status(DROPPED, name)
+        return status_sql(DROPPED, name)
 
     def delete(self, database: str, schema: str, name: str) -> None:
         with self.duck_conn.cursor() as conn:
             conn.execute(f"delete from {tasks_table(database)} where schema_name = ? and name = ?", [schema, name])
 
     def delete_schema(self, database: str, schema: str) -> None:
-        """Delete every task in a schema."""
+        """Delete every task in a schema, and its run history."""
         with self.duck_conn.cursor() as conn:
-            conn.execute(f"delete from {tasks_table(database)} where schema_name = ?", [schema])
+            for table in (tasks_table(database), history_table(database), graph_runs_table(database)):
+                conn.execute(f"delete from {table} where schema_name = ?", [schema])
+
+    def mark_committed(self, task: Task) -> None:
+        """Record the first time the task is run, keeping any change made since it was read, eg: by its body."""
+        current = self.get(task.database, task.schema_name, task.name)
+        if current and current.last_committed_on is None:
+            self.save(replace(current, last_committed_on=now()))
 
     def save(self, task: Task) -> None:
         """Insert or replace the task. Writes go through a separate cursor, so they neither commit nor join the
@@ -474,7 +490,7 @@ class TaskCatalog:
                 schema_name=schema,
                 name=name,
                 id=str(uuid.uuid4()),
-                created_on=_now(),
+                created_on=now(),
                 owner=self.role,
                 state=SUSPENDED,
                 last_committed_on=None,
@@ -486,7 +502,7 @@ class TaskCatalog:
             database=database,
             schema_name=schema,
             name=name,
-            created_on=_now(),
+            created_on=now(),
             owner=self.role,
             predecessors=[after.name for after in stmt.after],
             condition=stmt.condition,
@@ -526,22 +542,36 @@ def _unset_property(task: Task, prop: str) -> None:
 
 
 def _resumed(task: Task) -> Task:
-    return replace(task, state=STARTED, last_committed_on=task.last_committed_on or _now())
+    return replace(task, state=STARTED, last_committed_on=task.last_committed_on or now())
 
 
 def _suspended(task: Task, reason: str) -> Task:
-    return replace(task, state=SUSPENDED, last_suspended_on=_now(), last_suspended_reason=reason)
+    return replace(task, state=SUSPENDED, last_suspended_on=now(), last_suspended_reason=reason)
 
 
-def _now() -> datetime:
+def now() -> datetime:
     return datetime.now().astimezone()
 
 
 def tasks_table(database: str) -> str:
-    return '"{}"._fs_information_schema._fs_tasks'.format(database.replace('"', '""'))
+    return _table(database, "_fs_tasks")
 
 
-def _status(template: str, name: str) -> str:
+def history_table(database: str) -> str:
+    """One row per task run, the source of TASK_HISTORY."""
+    return _table(database, "_fs_task_history")
+
+
+def graph_runs_table(database: str) -> str:
+    """One row per graph run, the source of COMPLETE_TASK_GRAPHS."""
+    return _table(database, "_fs_task_graph_runs")
+
+
+def _table(database: str, name: str) -> str:
+    return '"{}"._fs_information_schema.{}'.format(database.replace('"', '""'), name)
+
+
+def status_sql(template: str, name: str) -> str:
     return "SELECT '{}' AS status".format(template.format(name=name).replace("'", "''"))
 
 

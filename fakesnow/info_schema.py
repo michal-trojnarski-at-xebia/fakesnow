@@ -299,6 +299,55 @@ create table if not exists ${catalog}._fs_information_schema._fs_tasks (
     """
 )
 
+# one row per task run by a graph run, the source of TASK_HISTORY
+SQL_CREATE_TASK_HISTORY_TABLE = Template(
+    """
+create table if not exists ${catalog}._fs_information_schema._fs_task_history (
+    query_id VARCHAR,
+    name VARCHAR,
+    schema_name VARCHAR,
+    query_text VARCHAR,
+    condition_text VARCHAR,
+    state VARCHAR,
+    error_code INTEGER,
+    error_message VARCHAR,
+    scheduled_time TIMESTAMPTZ,
+    query_start_time TIMESTAMPTZ,
+    completed_time TIMESTAMPTZ,
+    root_task_id VARCHAR,
+    run_id BIGINT,
+    return_value VARCHAR,
+    scheduled_from VARCHAR,
+    attempt_number INTEGER,
+    config VARCHAR,
+    graph_run_group_id VARCHAR
+)
+    """
+)
+
+# one row per graph run, the source of COMPLETE_TASK_GRAPHS
+SQL_CREATE_TASK_GRAPH_RUNS_TABLE = Template(
+    """
+create table if not exists ${catalog}._fs_information_schema._fs_task_graph_runs (
+    root_task_name VARCHAR,
+    schema_name VARCHAR,
+    state VARCHAR,
+    scheduled_from VARCHAR,
+    first_error_task_name VARCHAR,
+    first_error_code INTEGER,
+    first_error_message VARCHAR,
+    scheduled_time TIMESTAMPTZ,
+    query_start_time TIMESTAMPTZ,
+    completed_time TIMESTAMPTZ,
+    root_task_id VARCHAR,
+    run_id BIGINT,
+    attempt_number INTEGER,
+    config VARCHAR,
+    graph_run_group_id VARCHAR
+)
+    """
+)
+
 
 SQL_CREATE_GLOBAL_INFORMATION_SCHEMA_STAGES_TABLE = """
 CREATE TABLE IF NOT EXISTS _fs_global._fs_information_schema._fs_stages (
@@ -347,6 +396,8 @@ def per_db_creation_sql(catalog: str) -> str:
         {SQL_CREATE_INFORMATION_SCHEMA_VIEWS_VIEW.substitute(catalog=catalog)};
         {SQL_CREATE_LOAD_HISTORY_TABLE.substitute(catalog=catalog)};
         {SQL_CREATE_TASKS_TABLE.substitute(catalog=catalog)};
+        {SQL_CREATE_TASK_HISTORY_TABLE.substitute(catalog=catalog)};
+        {SQL_CREATE_TASK_GRAPH_RUNS_TABLE.substitute(catalog=catalog)};
     """
 
 

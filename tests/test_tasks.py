@@ -11,6 +11,7 @@ from fakesnow.instance import FakeSnow
 from tests.utils import dindent, indent
 
 
+# stored session parameters have no live-visible equivalent (SHOW PARAMETERS IN TASK isn't implemented)
 def _select(cur: snowflake.connector.cursor.SnowflakeCursor, columns: str, name: str | None = None) -> list[tuple]:
     where = f" where name = '{name.upper()}'" if name else ""
     cur.execute(f"select {columns} from db1._fs_information_schema._fs_tasks{where}")
@@ -28,11 +29,6 @@ def _show(cur: snowflake.connector.cursor.SnowflakeCursor, columns: str, name: s
         for row in cur.fetchall()
         if name is None or row[names.index("name")] == (name[1:-1] if name.startswith('"') else name.upper())
     ]
-
-
-def _task_ids(cur: snowflake.connector.cursor.SnowflakeCursor) -> list[tuple]:
-    cur.execute("select id from db1._fs_information_schema._fs_tasks")
-    return cur.fetchall()
 
 
 def test_create_task_status(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -54,17 +50,17 @@ def test_create_task_existing_raises(cur: snowflake.connector.cursor.SnowflakeCu
 
 def test_create_or_replace_task_gets_new_id(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 as select 1")
-    (before,) = _task_ids(cur)
+    (before,) = _show(cur, "id")
     cur.execute("create or replace task t1 as select 2")
-    (after,) = _task_ids(cur)
+    (after,) = _show(cur, "id")
     assert before != after
 
 
 def test_create_or_alter_task_keeps_id(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 as select 1")
-    (before,) = _task_ids(cur)
+    (before,) = _show(cur, "id")
     cur.execute("create or alter task t1 as select 2")
-    assert _task_ids(cur) == [before]
+    assert _show(cur, "id") == [before]
 
 
 def test_create_or_alter_task_replaces_definition(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -128,7 +124,7 @@ def test_create_task_clone_copies_properties(cur: snowflake.connector.cursor.Sno
 def test_create_task_clone_gets_new_id(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 as select 1")
     cur.execute("create task t2 clone t1")
-    assert len({id_ for (id_,) in _task_ids(cur)}) == 2
+    assert len({id_ for (id_,) in _show(cur, "id")}) == 2
 
 
 def test_create_task_clone_is_suspended(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -160,7 +156,7 @@ def test_drop_task_status(cur: snowflake.connector.cursor.SnowflakeCursor):
 def test_drop_task_removes_it(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 as select 1")
     cur.execute("drop task t1")
-    assert _task_ids(cur) == []
+    assert _show(cur, "id") == []
 
 
 def test_drop_missing_task_raises(cur: snowflake.connector.cursor.SnowflakeCursor):

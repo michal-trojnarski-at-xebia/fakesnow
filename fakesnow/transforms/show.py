@@ -336,9 +336,10 @@ def show_grants(
     duck_conn: DuckDBPyConnection,
     temporaries: TemporaryObjects,
 ) -> Expr:
-    """Transform SHOW GRANTS ON <kind> <name>.
+    """Transform SHOW GRANTS ON [<kind>] <name>.
 
-    Grants aren't tracked, so only the implicit OWNERSHIP grant held by the session role is reported.
+    Grants aren't tracked, so only the implicit OWNERSHIP grant held by the session role is reported. Without a kind,
+    as dbt renders it, the name is resolved as a table and then a view.
 
     See https://docs.snowflake.com/en/sql-reference/sql/show-grants
     """
@@ -355,19 +356,26 @@ def show_grants(
     if not tokens or tokens[0].token_type != TokenType.VAR or tokens[0].text.upper() != "GRANTS":
         return expression
 
-    kind = tokens[2].text.upper() if len(tokens) > 3 and tokens[1].token_type == TokenType.ON else ""
-    if kind not in ("TABLE", "VIEW", "SCHEMA", "DATABASE"):
+    if len(tokens) < 3 or tokens[1].token_type != TokenType.ON or tokens[2].text.upper() == "ACCOUNT":
         raise NotImplementedError(expression.sql(dialect="snowflake"))
+    if len(tokens) > 3 and tokens[3].token_type != TokenType.DOT:
+        # ON <kind> <name>
+        kind, start = tokens[2].text.upper(), tokens[3].start
+        if kind not in ("TABLE", "VIEW", "SCHEMA", "DATABASE"):
+            raise NotImplementedError(expression.sql(dialect="snowflake"))
+    else:
+        # ON <name>, a table or view
+        kind, start = "", tokens[2].start
 
     # parse the name from the original text so quoting is preserved
-    table = exp.to_table(text[tokens[3].start :], dialect="snowflake")
+    table = exp.to_table(text[start:], dialect="snowflake")
     parts = [normalise_ident(p.sql(dialect="snowflake")) for p in reversed(table.parts)]
-    if len(parts) > {"TABLE": 3, "VIEW": 3, "SCHEMA": 2, "DATABASE": 1}[kind]:
+    if len(parts) > {"TABLE": 3, "VIEW": 3, "SCHEMA": 2, "DATABASE": 1, "": 3}[kind]:
         raise NotImplementedError(expression.sql(dialect="snowflake"))
 
     # fill in unqualified leading parts from the session
     session = [normalise_ident(d) if d else None for d in (current_database, current_schema)]
-    qualifiers = session[: {"TABLE": 2, "VIEW": 2, "SCHEMA": 1, "DATABASE": 0}[kind]]
+    qualifiers = session[: {"TABLE": 2, "VIEW": 2, "SCHEMA": 1, "DATABASE": 0, "": 2}[kind]]
     leading = qualifiers[: len(qualifiers) + 1 - len(parts)]
     if not all(leading):
         raise NotImplementedError(expression.sql(dialect="snowflake"))
@@ -375,21 +383,29 @@ def show_grants(
 
     if kind == "DATABASE":
         exists_sql = "SELECT 1 FROM _fs_global._fs_information_schema._fs_show_databases WHERE name = ?"
+        exists = duck_conn.execute(exists_sql, names).fetchone() is not None
     elif kind == "SCHEMA":
         exists_sql = (
             "SELECT 1 FROM _fs_global._fs_information_schema._fs_show_schemas WHERE database_name = ? AND name = ?"
         )
+        exists = duck_conn.execute(exists_sql, names).fetchone() is not None
     else:
-        exists_sql = (
-            "SELECT 1 FROM _fs_global._fs_information_schema._fs_show_objects "
-            f"WHERE database_name = ? AND schema_name = ? AND name = ? AND kind = '{kind}'"
+        # temporary tables and views are kept out of the show views
+        temporary = temporaries.kind(names[2], names[0], names[1])
+        objects_sql = (
+            "SELECT kind FROM _fs_global._fs_information_schema._fs_show_objects "
+            "WHERE database_name = ? AND schema_name = ? AND name = ?"
         )
-    # temporary tables and views are kept out of the show views
-    is_temporary = kind in ("TABLE", "VIEW") and temporaries.owner(names[-1]) == (names[0], names[1])
-    if not is_temporary and duck_conn.execute(exists_sql, names).fetchone() is None:
-        fqname = ".".join(names)
+        kinds = {k for (k,) in duck_conn.execute(objects_sql, names).fetchall()}
+        if kind:
+            exists = bool(temporary) or kind in kinds
+        else:
+            kind = temporary or next((k for k in ("TABLE", "VIEW") if k in kinds), "")
+            exists = bool(kind)
+    if not exists:
+        fqname, label = ".".join(names), (kind or "object").capitalize()
         raise snowflake.connector.errors.ProgrammingError(
-            msg=f"SQL compilation error:\n{kind.capitalize()} '{fqname}' does not exist or not authorized.",
+            msg=f"SQL compilation error:\n{label} '{fqname}' does not exist or not authorized.",
             errno=2003,
             sqlstate="02000",
         )

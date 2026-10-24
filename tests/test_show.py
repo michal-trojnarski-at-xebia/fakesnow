@@ -807,3 +807,27 @@ def test_show_grants_on_temporary_table(dcur: snowflake.connector.cursor.DictCur
     dcur.execute("create temporary table db1.schema1.tt (a int)")
     dcur.execute("show grants on table db1.schema1.tt")
     assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.TT")]
+
+
+def test_show_grants_without_kind_on_table(dcur: snowflake.connector.cursor.DictCursor):
+    # dbt renders show grants on <relation> without an object type
+    dcur.execute("create table t1 (id int)")
+    dcur.execute("show grants on db1.schema1.t1")
+    assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.T1")]
+
+
+def test_show_grants_without_kind_on_view(dcur: snowflake.connector.cursor.DictCursor):
+    dcur.execute("create view v1 as select 1 as id")
+    dcur.execute("show grants on db1.schema1.v1")
+    assert dcur.fetchall() == [_ownership("VIEW", "DB1.SCHEMA1.V1")]
+
+
+def test_show_grants_without_kind_on_temporary_table(dcur: snowflake.connector.cursor.DictCursor):
+    dcur.execute("create temporary table tt (a int)")
+    dcur.execute("show grants on db1.schema1.tt")
+    assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.TT")]
+
+
+def test_show_grants_without_kind_on_missing_object(dcur: snowflake.connector.cursor.DictCursor):
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="does not exist or not authorized"):
+        dcur.execute("show grants on db1.schema1.nope")

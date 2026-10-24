@@ -1,6 +1,7 @@
 # ruff: noqa: E501
 
 import datetime
+import importlib
 import os
 import tempfile
 import uuid
@@ -870,3 +871,16 @@ def test_server_default_db_path_persists(tmp_path: Path) -> None:
         cur = conn.cursor()
         cur.execute("select count(*) from t")
         assert cur.fetchall() == [(2,)]
+
+
+def test_server_failed_start_restores_default_db_path(tmp_path: Path) -> None:
+    server_module = importlib.import_module("fakesnow.server")
+
+    with (
+        patch("uvicorn.Server.run"),
+        pytest.raises(RuntimeError, match="Failed to start server"),
+        fakesnow.server(db_path=str(tmp_path)),
+    ):
+        pass
+
+    assert server_module.default_db_path is None

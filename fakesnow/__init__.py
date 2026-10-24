@@ -139,6 +139,7 @@ def server(
         sleep(0.1)
 
     if not uvicorn_server.started:
+        restore_default()
         raise RuntimeError("Failed to start server")
 
     try:

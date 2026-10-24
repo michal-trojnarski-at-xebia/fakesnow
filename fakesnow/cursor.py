@@ -717,15 +717,15 @@ class FakeSnowflakeCursor:
             assert catalog and schema
             self._duck_conn.execute(info_schema.insert_table_comment_sql(catalog, schema, table.name, comment))
 
-        if transformed.args.get("swap_comments") and isinstance(transformed, exp.Alter):
-            # comments are keyed by table name, so they follow the tables. This is the second table
-            # renamed to the first one's name.
+        if transformed.args.get("swap_metadata") and isinstance(transformed, exp.Alter):
+            # comments and text lengths are keyed by table name, so they follow the tables. This is the second
+            # table renamed to the first one's name.
             table = cast(exp.Table, transformed.this)
             rename = cast(exp.AlterRename, transformed.args["actions"][0])
             catalog = table.catalog or self._conn.database
             schema = table.db or self._conn.schema
             assert catalog and schema
-            self._duck_conn.execute(info_schema.swap_table_comments_sql(catalog, schema, table.name, rename.this.name))
+            self._duck_conn.execute(info_schema.swap_table_metadata_sql(catalog, schema, table.name, rename.this.name))
 
         if (
             not temporary

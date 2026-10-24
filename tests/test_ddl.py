@@ -236,6 +236,17 @@ def test_alter_table_swap_with_keeps_comments(cur: snowflake.connector.cursor.Sn
     assert cur.fetchall() == [("A", "from b"), ("B", "from a")]
 
 
+def test_alter_table_swap_with_keeps_text_lengths(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
+    cur.execute("create table a (c varchar(5))")
+    cur.execute("create table b (c varchar(20))")
+    cur.execute("alter table a swap with b")
+    cur.execute(
+        "select table_name, character_maximum_length from information_schema.columns "
+        "where table_name in ('A', 'B') order by 1"
+    )
+    assert cur.fetchall() == [("A", 20), ("B", 5)]
+
+
 def test_alter_table_swap_with_missing_table(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
     cur.execute("create table a (x int)")
     with pytest.raises(snowflake.connector.errors.ProgrammingError, match="does not exist"):

@@ -334,18 +334,22 @@ def insert_table_comment_sql(catalog: str, schema: str, table: str, comment: str
     """
 
 
-def swap_table_comments_sql(catalog: str, schema: str, table: str, other: str) -> str:
+def swap_table_metadata_sql(catalog: str, schema: str, table: str, other: str) -> str:
+    """Swap the recorded table comments and column text lengths of two tables, which are keyed by table name."""
     # via a placeholder name because the name is part of the key
     key = f"ext_table_catalog = '{catalog}' AND ext_table_schema = '{schema}'"
     tmp = f"_fs_swap_{secrets.token_hex(8)}"
-    return f"""
-        UPDATE _fs_global._fs_information_schema._fs_tables_ext SET ext_table_name = '{tmp}'
+    return ";".join(
+        f"""
+        UPDATE _fs_global._fs_information_schema.{ext} SET ext_table_name = '{tmp}'
             WHERE {key} AND ext_table_name = '{table}';
-        UPDATE _fs_global._fs_information_schema._fs_tables_ext SET ext_table_name = '{table}'
+        UPDATE _fs_global._fs_information_schema.{ext} SET ext_table_name = '{table}'
             WHERE {key} AND ext_table_name = '{other}';
-        UPDATE _fs_global._fs_information_schema._fs_tables_ext SET ext_table_name = '{other}'
+        UPDATE _fs_global._fs_information_schema.{ext} SET ext_table_name = '{other}'
             WHERE {key} AND ext_table_name = '{tmp}'
-    """
+        """
+        for ext in ("_fs_tables_ext", "_fs_columns_ext")
+    )
 
 
 def insert_text_lengths_sql(catalog: str, schema: str, table: str, text_lengths: list[tuple[str, int]]) -> str:

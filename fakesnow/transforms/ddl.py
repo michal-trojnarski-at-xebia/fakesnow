@@ -66,9 +66,9 @@ def alter_table_add_multiple_columns(
 def swap_table(expression: Expr, current_database: str | None, current_schema: str | None) -> list[Expr]:
     """Transform ALTER TABLE a SWAP WITH b, which duckdb lacks, into renames through a temporary name.
 
-    a -> tmp, b -> a, tmp -> b. The b -> a rename carries swap_comments so the cursor can swap the
-    tables' recorded comments, which are keyed by name. Both tables are read first so that a missing one fails
-    before anything is renamed.
+    a -> tmp, b -> a, tmp -> b. The b -> a rename carries swap_metadata so the cursor can swap the tables' recorded
+    comments and text lengths, which are keyed by name. Both tables are read first so that a missing one fails before
+    anything is renamed.
     """
     if not (
         isinstance(expression, exp.Alter)
@@ -109,7 +109,7 @@ def swap_table(expression: Expr, current_database: str | None, current_schema: s
         )
 
     second_to_first = rename(second.this, first.this)
-    second_to_first.set("swap_comments", True)
+    second_to_first.set("swap_metadata", True)
     probes = [exp.select("1").from_(t.copy()).where(exp.false()) for t in (first, second)]
     return [*probes, rename(first.this, tmp), second_to_first, rename(tmp, second.this)]
 

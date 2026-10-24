@@ -1050,6 +1050,16 @@ def test_show_tasks_in_schema_scopes_same_named_tasks(cur: snowflake.connector.c
     assert [row[names.index("comment")] for row in cur.fetchall()] == ["two"]
 
 
+def test_show_tasks_in_bare_schema_name_scopes_same_named_tasks(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create schema schema2")
+    cur.execute("use schema schema1")
+    cur.execute("create task schema1.t1 as select 1")
+    cur.execute("create task schema2.t1 comment = 'two' as select 1")
+    cur.execute("show tasks in schema2")
+    names = [d.name for d in cur.description]
+    assert [row[names.index("comment")] for row in cur.fetchall()] == ["two"]
+
+
 def test_show_tasks_in_schema_without_name_uses_current_schema(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create schema schema2")
     cur.execute("use schema schema1")

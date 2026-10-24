@@ -176,6 +176,18 @@ def test_parse_show_tasks_in_account():
     assert s.scope_name is None
 
 
+def test_parse_show_tasks_in_bare_schema_name():
+    s = parse_task_statement("show tasks in schema1")
+    assert isinstance(s, ShowTasks)
+    assert (s.scope, s.scope_name) == ("SCHEMA", ["SCHEMA1"])
+
+
+def test_parse_show_tasks_in_qualified_schema_name():
+    s = parse_task_statement("show tasks in db1.schema1")
+    assert isinstance(s, ShowTasks)
+    assert (s.scope, s.scope_name) == ("SCHEMA", ["DB1", "SCHEMA1"])
+
+
 def test_parse_execute_task_using_config():
     assert parse_task_statement("""execute task t1 using config = '{"a": 1}'""") == ExecuteTask(
         TaskName(None, None, "T1"), '{"a": 1}'

@@ -344,8 +344,13 @@ def _show(t: _Tokens) -> ShowTasks:
                 show.scope = "DATABASE"
             elif t.accept("SCHEMA"):
                 show.scope = "SCHEMA"
-            else:
+            elif t.at_end() or t.peek() in ("STARTS", "ROOT", "LIMIT", "LIKE"):
                 t.fail("ACCOUNT, DATABASE or SCHEMA")
+            else:
+                # a bare, possibly qualified, schema name
+                show.scope = "SCHEMA"
+                show.scope_name = t.parts()
+                continue
             if show.scope != "ACCOUNT" and not t.at_end() and t.peek() not in ("STARTS", "ROOT", "LIMIT", "LIKE"):
                 show.scope_name = t.parts()
         elif t.accept("STARTS", "WITH"):

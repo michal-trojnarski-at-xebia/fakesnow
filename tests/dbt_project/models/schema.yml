@@ -1,0 +1,13 @@
+version: 2
+models:
+  - name: stg_orders
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+          - unique
+  - name: orders_table
+    config:
+      grants:
+        select: ['REPORTER']
+      query_tag: 'fsproj'

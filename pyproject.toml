@@ -45,6 +45,8 @@ dev = [
     "testcontainers>=4.15.0",
     "twine~=7.0",
 ]
+# for the end-to-end dbt project test
+dbt = ["dbt-core~=1.12", "dbt-snowflake~=1.12"]
 # for debugging, see https://duckdb.org/docs/guides/python/jupyter.html
 notebook = ["duckdb-engine", "ipykernel", "jupysql"]
 

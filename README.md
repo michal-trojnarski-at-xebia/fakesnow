@@ -220,6 +220,38 @@ String url = "jdbc:snowflake://" + fakesnow.getHost() + ":" + fakesnow.getMapped
     + "/?ssl=off&account=fakesnow&db=db1&schema=schema1";
 ```
 
+#### Connecting from dbt
+
+Point a [dbt-snowflake](https://docs.getdbt.com/docs/core/connect-data-platform/snowflake-setup) profile at `fakesnow -s`:
+
+```yaml
+my_project:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: fakesnow
+      user: fake
+      password: snow
+      database: dbt_db
+      schema: analytics
+      host: localhost
+      port: <port number from server startup>
+      protocol: http
+      threads: 1
+```
+
+Or run dbt in-process with [`dbtRunner`](https://docs.getdbt.com/reference/programmatic-invocations) inside `fakesnow.patch()`, in which case `host`, `port` and `protocol` aren't needed:
+
+```python
+import fakesnow
+from dbt.cli.main import dbtRunner
+
+with fakesnow.patch():
+    result = dbtRunner().invoke(["build"])
+    assert result.success
+```
+
 ### pytest fixtures
 
 fakesnow provides [fixtures](fakesnow/fixtures.py) for easier test integration. Add them in _conftest.py_:

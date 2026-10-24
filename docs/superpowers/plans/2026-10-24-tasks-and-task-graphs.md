@@ -482,10 +482,12 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
 2. Errors: missing task, unknown property, duplicate CREATE (`ALREADY_EXISTS`), missing schema or database on CREATE, started root, missing/other-schema predecessor, schedule on a child,
    finalizer rules (incl. non-root and self), predecessors in different graphs, cycle, limits, EXECUTE TASK on a child.
 3. SHOW TASKS / DESCRIBE TASK columns and values (spec check 1).
-4. Current database/schema inside a task run; `SYSTEM$` task functions outside a task (spec check 4).
+4. Current database/schema inside a task run; `SYSTEM$` task functions outside a task (spec check 4; fakesnow: every
+   one returns NULL, including `SYSTEM$SET_RETURN_VALUE`).
 5. Whether `WHEN` false on a child still lets the finalizer run (spec check 5).
 6. EXECUTE TASK inside an explicit transaction: rejected or commits (spec check 10).
-7. `SYSTEM$TASK_DEPENDENTS_ENABLE` and `SYSTEM$SET_RETURN_VALUE` return values.
+7. `SYSTEM$TASK_DEPENDENTS_ENABLE` and `SYSTEM$SET_RETURN_VALUE` return values (fakesnow: `SET_RETURN_VALUE` returns its
+   argument inside a task and NULL outside).
 8. Whether resuming a standalone task without a SCHEDULE is allowed.
 9. Whether `EXECUTE TASK ... USING CONFIG` replaces the root's CONFIG or merges into it.
 10. ALTER TASK: `last_suspended_reason` `USER_SUSPENDED` after `ALTER TASK ... SUSPEND`; the SYSTEM$TASK_DEPENDENTS_ENABLE

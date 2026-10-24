@@ -1482,3 +1482,138 @@ def test_execute_quoted_child_task_raises(cur: snowflake.connector.cursor.Snowfl
         match=r"Cannot execute task DB1\.SCHEMA1\.my child: EXECUTE TASK can only run a standalone or root task\.",
     ):
         cur.execute('execute task "my child"')
+
+
+def _create_root_returning_value(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
+    cur.execute("create table seen (v varchar)")
+    cur.execute("create task root as select system$set_return_value('from root')")
+
+
+def test_set_return_value_recorded_in_history(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select system$set_return_value('done')")
+    cur.execute("execute task t1")
+    assert _history(cur, "return_value") == [("done",)]
+
+
+def test_set_return_value_stringifies_result(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select system$set_return_value(40 + 2)")
+    cur.execute("execute task t1")
+    assert _history(cur, "return_value") == [("42",)]
+
+
+def test_predecessor_return_value_in_child(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _create_root_returning_value(cur)
+    cur.execute("create task child after root as insert into seen select system$get_predecessor_return_value('root')")
+    cur.execute("select system$task_dependents_enable('root')")
+    cur.execute("execute task root")
+    cur.execute("select v from seen")
+    assert cur.fetchall() == [("from root",)]
+
+
+def test_predecessor_return_value_without_argument(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _create_root_returning_value(cur)
+    cur.execute("create task child after root as insert into seen select system$get_predecessor_return_value()")
+    cur.execute("select system$task_dependents_enable('root')")
+    cur.execute("execute task root")
+    cur.execute("select v from seen")
+    assert cur.fetchall() == [("from root",)]
+
+
+def test_predecessor_return_value_quoted_name(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table seen (v varchar)")
+    cur.execute("""create task "My Root" as select system$set_return_value('quoted')""")
+    cur.execute(
+        """create task child after "My Root" as
+        insert into seen select system$get_predecessor_return_value('"My Root"')"""
+    )
+    cur.execute("""select system$task_dependents_enable('"My Root"')""")
+    cur.execute('execute task "My Root"')
+    cur.execute("select v from seen")
+    assert cur.fetchall() == [("quoted",)]
+
+
+def test_predecessor_return_value_in_when(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table seen (v varchar)")
+    cur.execute("create task root as select system$set_return_value('go')")
+    cur.execute(
+        """create task child after root
+        when system$get_predecessor_return_value('root') = 'go'
+        as insert into seen values ('ran')"""
+    )
+    cur.execute("select system$task_dependents_enable('root')")
+    cur.execute("execute task root")
+    cur.execute("select v from seen")
+    assert cur.fetchall() == [("ran",)]
+
+
+def test_get_task_graph_config(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table seen (v varchar)")
+    cur.execute("""create task t1 config = '{"a": 1}' as insert into seen select system$get_task_graph_config()""")
+    cur.execute("execute task t1")
+    cur.execute("select v from seen")
+    assert cur.fetchall() == [('{"a": 1}',)]
+
+
+def test_get_task_graph_config_key(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table seen (v varchar)")
+    cur.execute("""create task t1 config = '{"a": "x"}' as insert into seen select system$get_task_graph_config('a')""")
+    cur.execute("execute task t1")
+    cur.execute("select v from seen")
+    assert cur.fetchall() == [("x",)]
+
+
+def test_get_task_graph_config_using_config(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table seen (v varchar)")
+    cur.execute("""create task t1 config = '{"a": 1}' as insert into seen select system$get_task_graph_config()""")
+    cur.execute("""execute task t1 using config = '{"b": 2}'""")
+    cur.execute("select v from seen")
+    assert cur.fetchall() == [('{"b": 2}',)]
+
+
+def test_current_user_task_name(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table seen (v varchar)")
+    cur.execute("create task t1 as insert into seen select system$current_user_task_name()")
+    cur.execute("execute task t1")
+    cur.execute("select v from seen")
+    assert cur.fetchall() == [("T1",)]
+
+
+def test_task_runtime_info_current_root_task_name(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table seen (v varchar)")
+    cur.execute("create task root as select 1")
+    cur.execute(
+        "create task child after root as insert into seen select system$task_runtime_info('CURRENT_ROOT_TASK_NAME')"
+    )
+    cur.execute("select system$task_dependents_enable('root')")
+    cur.execute("execute task root")
+    cur.execute("select v from seen")
+    assert cur.fetchall() == [("DB1.SCHEMA1.ROOT",)]
+
+
+def test_task_runtime_info_graph_run_group_id(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table seen (v varchar)")
+    cur.execute("create task t1 as insert into seen select system$task_runtime_info('CURRENT_TASK_GRAPH_RUN_GROUP_ID')")
+    cur.execute("execute task t1")
+    cur.execute("select v from seen")
+    assert cur.fetchall() == _history(cur, "graph_run_group_id")
+
+
+def test_task_functions_match_case_insensitively(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table seen (v varchar)")
+    cur.execute("create task t1 as insert into seen select SYSTEM$Current_User_Task_Name()")
+    cur.execute("execute task t1")
+    cur.execute("select v from seen")
+    assert cur.fetchall() == [("T1",)]
+
+
+def test_task_functions_outside_task_return_null(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute(
+        """select system$current_user_task_name() as a, system$task_runtime_info('CURRENT_TASK_NAME') as b,
+        system$get_task_graph_config() as c, system$get_predecessor_return_value('t') as d"""
+    )
+    assert cur.fetchall() == [(None, None, None, None)]
+
+
+def test_set_return_value_outside_task_returns_null(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("select system$set_return_value('x')")
+    assert cur.fetchall() == [(None,)]

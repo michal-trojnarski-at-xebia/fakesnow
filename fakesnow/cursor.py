@@ -298,6 +298,7 @@ class FakeSnowflakeCursor:
         return (
             expression.transform(lambda e: transforms.identifier(e, params), copy=False)
             .transform(tasks.task_statement, copy=False)
+            .transform(lambda e: tasks.task_functions(e, self._conn.task_context), copy=False)
             .transform(transforms.upper_case_unquoted_identifiers, copy=False)
             .transform(
                 lambda e: transforms.temporary_objects(
@@ -776,6 +777,8 @@ class FakeSnowflakeCursor:
             # rows affected, not the single row those counts are in
             affected_count = int(sum(c[0].as_py() for c in self._arrow_table.columns))
         self._rowcount = affected_count if affected_count is not None else self._arrow_table.num_rows
+        if transformed.args.get("set_return_value"):
+            tasks.store_return_value(self._conn.task_context, self._arrow_table)
         self._sfqid = str(uuid.uuid4())
 
         self._last_sql = result_sql or sql

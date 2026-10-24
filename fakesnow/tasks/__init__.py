@@ -10,6 +10,7 @@ from duckdb import DuckDBPyConnection
 from sqlglot import Expr, exp
 
 from fakesnow.tasks.catalog import TaskCatalog, status_sql
+from fakesnow.tasks.functions import store_return_value, task_functions
 from fakesnow.tasks.runner import EXECUTED, run_graph
 from fakesnow.tasks.show import describe_task_sql, show_tasks_sql
 from fakesnow.tasks.statements import (
@@ -40,6 +41,9 @@ _COMMANDS: dict[type, str] = {
     DescribeTask: "DESCRIBE TASK",
 }
 _ENABLE_DEPENDENTS = "SYSTEM$TASK_DEPENDENTS_ENABLE"
+
+
+__all__ = ["drop_schema", "execute", "store_return_value", "task_functions", "task_statement"]
 
 
 def task_statement(expression: Expr) -> Expr:

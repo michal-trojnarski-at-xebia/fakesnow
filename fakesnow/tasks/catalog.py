@@ -168,7 +168,7 @@ class TaskCatalog:
         # a separate cursor, so reads see what save committed without joining the caller's transaction
         with self.duck_conn.cursor() as conn:
             row = conn.execute(
-                f"select {_COLUMNS} from {_table(database)} where schema_name = ? and name = ?", [schema, name]
+                f"select {_COLUMNS} from {tasks_table(database)} where schema_name = ? and name = ?", [schema, name]
             ).fetchone()
         return _task(database, row) if row else None
 
@@ -414,12 +414,12 @@ class TaskCatalog:
 
     def delete(self, database: str, schema: str, name: str) -> None:
         with self.duck_conn.cursor() as conn:
-            conn.execute(f"delete from {_table(database)} where schema_name = ? and name = ?", [schema, name])
+            conn.execute(f"delete from {tasks_table(database)} where schema_name = ? and name = ?", [schema, name])
 
     def delete_schema(self, database: str, schema: str) -> None:
         """Delete every task in a schema."""
         with self.duck_conn.cursor() as conn:
-            conn.execute(f"delete from {_table(database)} where schema_name = ?", [schema])
+            conn.execute(f"delete from {tasks_table(database)} where schema_name = ?", [schema])
 
     def save(self, task: Task) -> None:
         """Insert or replace the task. Writes go through a separate cursor, so they neither commit nor join the
@@ -451,14 +451,16 @@ class TaskCatalog:
         ]
         with self.duck_conn.cursor() as conn:
             conn.execute(
-                f"insert or replace into {_table(task.database)} ({_COLUMNS}) values ({', '.join('?' * len(values))})",
+                f"insert or replace into {tasks_table(task.database)} ({_COLUMNS}) "
+                f"values ({', '.join('?' * len(values))})",
                 values,
             )
 
     def _schema_tasks(self, database: str, schema: str) -> list[Task]:
         with self.duck_conn.cursor() as conn:
             rows = conn.execute(
-                f"select {_COLUMNS} from {_table(database)} where schema_name = ? order by created_on, name", [schema]
+                f"select {_COLUMNS} from {tasks_table(database)} where schema_name = ? order by created_on, name",
+                [schema],
             ).fetchall()
         return [_task(database, row) for row in rows]
 
@@ -535,7 +537,7 @@ def _now() -> datetime:
     return datetime.now().astimezone()
 
 
-def _table(database: str) -> str:
+def tasks_table(database: str) -> str:
     return '"{}"._fs_information_schema._fs_tasks'.format(database.replace('"', '""'))
 
 

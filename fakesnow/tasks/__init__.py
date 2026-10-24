@@ -10,11 +10,14 @@ from duckdb import DuckDBPyConnection
 from sqlglot import Expr, exp
 
 from fakesnow.tasks.catalog import TaskCatalog
+from fakesnow.tasks.show import describe_task_sql, show_tasks_sql
 from fakesnow.tasks.statements import (
     AlterTask,
     CreateTask,
+    DescribeTask,
     DropTask,
     EnableDependents,
+    ShowTasks,
     TaskStatement,
     parse_task_name,
     parse_task_statement,
@@ -30,6 +33,8 @@ _COMMANDS: dict[type, str] = {
     AlterTask: "ALTER TASK",
     DropTask: "DROP TASK",
     EnableDependents: "SYSTEM$TASK_DEPENDENTS_ENABLE",
+    ShowTasks: "SHOW TASKS",
+    DescribeTask: "DESCRIBE TASK",
 }
 _ENABLE_DEPENDENTS = "SYSTEM$TASK_DEPENDENTS_ENABLE"
 
@@ -82,6 +87,10 @@ def execute(statement: TaskStatement, conn: FakeSnowflakeConnection) -> str:
         catalog.enable_dependents(statement.name)
         column = f"{_ENABLE_DEPENDENTS}('{statement.argument}')".replace('"', '""')
         return f'SELECT NULL AS "{column}"'
+    if isinstance(statement, ShowTasks):
+        return show_tasks_sql(statement, conn._duck_conn, catalog.current_database, catalog.current_schema)  # noqa: SLF001
+    if isinstance(statement, DescribeTask):
+        return describe_task_sql(catalog.require(statement.name))
     raise NotImplementedError(type(statement).__name__)
 
 

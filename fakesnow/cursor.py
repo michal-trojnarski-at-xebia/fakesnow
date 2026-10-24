@@ -710,9 +710,11 @@ class FakeSnowflakeCursor:
 
         # Temporary objects live in DuckDB's temp catalog, which the information schema doesn't report, so their
         # comment and text lengths aren't recorded. Under their Snowflake name they'd replace a permanent table's.
-        temporary = bool(transformed.args.get("temporary_owner"))
+        created_temporary = bool(transformed.args.get("temporary_owner"))
 
-        if not temporary and (table_comment := cast(tuple[exp.Table, str], transformed.args.get("table_comment"))):
+        if (table_comment := cast(tuple[exp.Table, str], transformed.args.get("table_comment"))) and not (
+            created_temporary or self._is_temporary(table_comment[0])
+        ):
             # record table comment
             table, comment = table_comment
             catalog = table.catalog or self._conn.database
@@ -731,9 +733,9 @@ class FakeSnowflakeCursor:
             self._duck_conn.execute(info_schema.swap_table_metadata_sql(catalog, schema, table.name, rename.this.name))
 
         if (
-            not temporary
-            and (text_lengths := cast(list[tuple[str, int]], transformed.args.get("text_lengths")))
+            (text_lengths := cast(list[tuple[str, int]], transformed.args.get("text_lengths")))
             and (table := transformed.find(exp.Table))
+            and not (created_temporary or self._is_temporary(table))
         ):
             # record text lengths
             catalog = table.catalog or self._conn.database
@@ -765,6 +767,15 @@ class FakeSnowflakeCursor:
             self._last_params,
             self._last_transformed,
         )
+
+    def _is_temporary(self, table: exp.Table) -> bool:
+        """Whether a table reference, after the temporary objects transform, names a session temporary object."""
+        if table.catalog.lower() == "temp":
+            # a qualified reference to a temporary object is rewritten to temp.main
+            return True
+        # an unqualified one is left as it is when it resolves to the temporary object
+        current = (self._conn.database, self._conn.schema)
+        return not table.db and self._conn.temporaries.owner(table.name) == current
 
     def _record_owner(self, transformed: Expr) -> None:
         """Record the session role as the owner of a database, schema, table or view just created."""

@@ -187,6 +187,30 @@ def test_temporary_table_not_visible_beside_cte_in_nested_scope(cur: snowflake.c
     assert cur.fetchall() == [(1,)]
 
 
+def test_comment_on_shadowing_temporary_table_leaves_permanent_comment(
+    cur: snowflake.connector.cursor.SnowflakeCursor,
+):
+    cur.execute("create table t1 (a int) comment = 'permanent'")
+    cur.execute("create temporary table t1 (a int)")
+    cur.execute("comment on table t1 is 'temporary'")
+    cur.execute("select comment from information_schema.tables where table_name = 'T1' and table_type = 'BASE TABLE'")
+    assert cur.fetchall() == [("permanent",)]
+
+
+def test_add_column_to_shadowing_temporary_table_leaves_permanent_text_lengths(
+    cur: snowflake.connector.cursor.SnowflakeCursor,
+):
+    cur.execute("create table t1 (a int, b varchar(20))")
+    cur.execute("create temporary table t1 (a int)")
+    cur.execute("alter table t1 add column b varchar(5)")
+    # drops the temporary table, which shadows the permanent one
+    cur.execute("drop table t1")
+    cur.execute(
+        "select character_maximum_length from information_schema.columns where table_name = 'T1' and column_name = 'B'"
+    )
+    assert cur.fetchall() == [(20,)]
+
+
 def test_qualified_temporary_table_is_session_isolated(conn: snowflake.connector.SnowflakeConnection):
     conn.cursor().execute("create temporary table db1.schema1.tt (a int)")
     with (

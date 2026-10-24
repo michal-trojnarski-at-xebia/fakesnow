@@ -199,3 +199,12 @@ def test_parse_malformed_task_statement_raises():
 
 def test_describe_task_parses_as_command():
     assert isinstance(fakesnow.dialect.parse_one("desc task t1"), exp.Command)
+
+
+@pytest.mark.parametrize("suffix", [";", " ;"])
+def test_parse_execute_task_trailing_semicolon(suffix: str):
+    assert parse_task_statement(f"execute task t1{suffix}") == ExecuteTask(TaskName(None, None, "T1"), None)
+
+
+def test_parse_execute_task_using_config_trailing_semicolon():
+    assert parse_task_statement("execute task t1 using config = '{}';") == ExecuteTask(TaskName(None, None, "T1"), "{}")

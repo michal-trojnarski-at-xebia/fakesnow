@@ -207,14 +207,16 @@ def parse_task_statement(sql: str) -> TaskStatement | None:
     """Parse a task statement, or return None if sql isn't one. Raises TaskSyntaxError if it is malformed."""
     try:
         tokens = sqlglot.tokenize(sql, read="snowflake")
+        while tokens and tokens[-1].token_type == TokenType.SEMICOLON:
+            tokens.pop()
         if tokens and tokens[0].token_type == TokenType.EXECUTE and len(tokens) == 2:
             # the tokenizer treats everything after EXECUTE as one opaque string, so tokenize that remainder
             sql = tokens[1].text
             tokens = [tokens[0], *sqlglot.tokenize(sql, read="snowflake")]
+            while tokens and tokens[-1].token_type == TokenType.SEMICOLON:
+                tokens.pop()
     except TokenError:
         return None
-    while tokens and tokens[-1].token_type == TokenType.SEMICOLON:
-        tokens.pop()
 
     t = _Tokens(sql, tokens)
     if t.accept("CREATE"):

@@ -168,6 +168,18 @@ def test_temporary_table_not_visible_unqualified_from_other_schema(
     assert cur.fetchall() == [(1,)]
 
 
+def test_temporary_table_not_visible_beside_cte_in_nested_scope(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table db1.schema1.t (a int)")
+    cur.execute("insert into db1.schema1.t values (1)")
+    cur.execute("create schema db1.other")
+    cur.execute("create temporary table db1.other.t (a int)")
+    cur.execute("insert into db1.other.t values (2)")
+    cur.execute("use schema schema1")
+    # the CTE only names t inside the subquery, so the outer t is the permanent table
+    cur.execute("select a from t where exists (with t as (select 1 as x) select * from t)")
+    assert cur.fetchall() == [(1,)]
+
+
 def test_qualified_temporary_table_is_session_isolated(conn: snowflake.connector.SnowflakeConnection):
     conn.cursor().execute("create temporary table db1.schema1.tt (a int)")
     with (

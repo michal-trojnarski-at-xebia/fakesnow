@@ -79,5 +79,17 @@ def _is_other_kind(table: exp.Table) -> bool:
 
 
 def _is_cte(table: exp.Table) -> bool:
-    """Whether table may name a CTE rather than a temporary object."""
-    return not table.args.get("db") and any(cte.alias == table.name for cte in table.root().find_all(exp.CTE))
+    """Whether table names a CTE in scope rather than a temporary object.
+
+    A CTE is in scope from the query whose WITH defines it, including that WITH's other CTEs.
+    """
+    if table.args.get("db"):
+        return False
+    node = table.parent
+    while node:
+        if isinstance(with_ := node.args.get("with_"), exp.With) and any(
+            cte.alias == table.name for cte in with_.expressions
+        ):
+            return True
+        node = node.parent
+    return False

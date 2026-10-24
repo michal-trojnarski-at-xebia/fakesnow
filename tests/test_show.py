@@ -786,9 +786,10 @@ def test_show_grants_resolves_unqualified_name(dcur: snowflake.connector.cursor.
     assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.T1")]
 
 
-def test_show_grants_reports_session_role(dcur: snowflake.connector.cursor.DictCursor):
-    dcur.execute("create table t1 (id int)")
+def test_show_grants_reports_creating_role(dcur: snowflake.connector.cursor.DictCursor):
+    # the role that creates an object owns it
     dcur.execute("use role transformer")
+    dcur.execute("create table t1 (id int)")
     dcur.execute("show grants on table db1.schema1.t1")
     assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.T1", role="TRANSFORMER")]
 

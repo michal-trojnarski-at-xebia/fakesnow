@@ -245,6 +245,14 @@ def test_drop_schema_drops_its_tasks(cur: snowflake.connector.cursor.SnowflakeCu
     assert cur.fetchall() == [("Task T1 successfully created.",)]
 
 
+def test_create_or_replace_schema_drops_its_tasks(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create schema s2")
+    cur.execute("create task s2.t1 as select 1")
+    cur.execute("create or replace schema s2")
+    cur.execute("create task s2.t1 as select 1")
+    assert cur.fetchall() == [("Task T1 successfully created.",)]
+
+
 def _start(cur: snowflake.connector.cursor.SnowflakeCursor, name: str) -> None:
     cur.execute(f"alter task {name} resume")
 

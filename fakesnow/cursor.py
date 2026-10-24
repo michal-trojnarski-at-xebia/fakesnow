@@ -670,6 +670,8 @@ class FakeSnowflakeCursor:
                 database = table.catalog or self._conn.database
                 assert database
                 schema = table.db
+                if transformed.args.get("replace"):
+                    tasks.drop_schema(self._duck_conn, database, schema)
                 self._duck_conn.execute(f"SET schema='{database}.{schema}'")
                 self._conn.database = database
                 self._conn.database_set = True

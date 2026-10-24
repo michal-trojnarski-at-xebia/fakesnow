@@ -335,20 +335,22 @@ def insert_table_comment_sql(catalog: str, schema: str, table: str, comment: str
 
 
 def swap_table_metadata_sql(catalog: str, schema: str, table: str, other: str) -> str:
-    """Swap the recorded table comments and column text lengths of two tables, which are keyed by table name."""
+    """Swap the recorded comments, column text lengths and load history of two tables, which are keyed by name."""
     # via a placeholder name because the name is part of the key
-    key = f"ext_table_catalog = '{catalog}' AND ext_table_schema = '{schema}'"
     tmp = f"_fs_swap_{secrets.token_hex(8)}"
+    ext_key = f"ext_table_catalog = '{catalog}' AND ext_table_schema = '{schema}'"
+    keyed = [
+        ("_fs_global._fs_information_schema._fs_tables_ext", ext_key, "ext_table_name"),
+        ("_fs_global._fs_information_schema._fs_columns_ext", ext_key, "ext_table_name"),
+        (f"{catalog}._fs_information_schema._fs_load_history", f"SCHEMA_NAME = '{schema}'", "TABLE_NAME"),
+    ]
     return ";".join(
         f"""
-        UPDATE _fs_global._fs_information_schema.{ext} SET ext_table_name = '{tmp}'
-            WHERE {key} AND ext_table_name = '{table}';
-        UPDATE _fs_global._fs_information_schema.{ext} SET ext_table_name = '{table}'
-            WHERE {key} AND ext_table_name = '{other}';
-        UPDATE _fs_global._fs_information_schema.{ext} SET ext_table_name = '{other}'
-            WHERE {key} AND ext_table_name = '{tmp}'
+        UPDATE {ext} SET {name} = '{tmp}' WHERE {key} AND {name} = '{table}';
+        UPDATE {ext} SET {name} = '{table}' WHERE {key} AND {name} = '{other}';
+        UPDATE {ext} SET {name} = '{other}' WHERE {key} AND {name} = '{tmp}'
         """
-        for ext in ("_fs_tables_ext", "_fs_columns_ext")
+        for ext, key, name in keyed
     )
 
 

@@ -82,8 +82,8 @@ def swap_table(
     """Transform ALTER TABLE a SWAP WITH b, which duckdb lacks, into renames through a temporary name.
 
     a -> tmp, b -> a, tmp -> b. The b -> a rename carries swap_metadata so the cursor can swap permanent tables'
-    recorded comments and text lengths, which are keyed by name. Both operands are checked to be tables, and read so
-    that a missing one fails, before anything is renamed.
+    recorded comments, text lengths and load history, which are keyed by name. Both operands are checked to be tables,
+    and read so that a missing one fails, before anything is renamed.
     """
     if not (
         isinstance(expression, exp.Alter)

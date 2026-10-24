@@ -279,10 +279,13 @@ class TaskCatalog:
 
         new = replace(task, predecessors=list(task.predecessors), properties=dict(task.properties))
         new.session_parameters = dict(task.session_parameters)
+        after = [(database, schema, p) for p in task.predecessors]
         if stmt.action == "ADD_AFTER":
-            for pred in stmt.tasks:
-                if (pred_name := self.resolve(pred)[2]) not in new.predecessors:
-                    new.predecessors.append(pred_name)
+            # keep the resolved names, so a predecessor in another schema is rejected as it is by CREATE
+            for pred in (self.resolve(p) for p in stmt.tasks):
+                if pred not in after:
+                    after.append(pred)
+                    new.predecessors.append(pred[2])
         elif stmt.action == "REMOVE_AFTER":
             removed = {r[2] for r in map(self.resolve, stmt.tasks) if r[:2] == (database, schema)}
             new.predecessors = [p for p in new.predecessors if p not in removed]
@@ -302,7 +305,9 @@ class TaskCatalog:
             new.condition = stmt.text
         elif stmt.action == "REMOVE_WHEN":
             new.condition = None
-        self._store(new, task, [(database, schema, p) for p in new.predecessors])
+        if stmt.action != "ADD_AFTER":
+            after = [(database, schema, p) for p in new.predecessors]
+        self._store(new, task, after)
         return _status(ALTERED, name)
 
     def enable_dependents(self, name: TaskName) -> None:

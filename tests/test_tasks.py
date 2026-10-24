@@ -607,6 +607,18 @@ def test_alter_task_add_after_started_root_raises(cur: snowflake.connector.curso
         cur.execute("alter task child add after root")
 
 
+def test_alter_task_add_after_other_schema_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task child as select 1")
+    cur.execute("create schema s2")
+    cur.execute("create task s2.p as select 1")
+    cur.execute("use schema schema1")
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"Task DB1\.SCHEMA1\.CHILD cannot depend on task DB1\.S2\.P in a different schema\.",
+    ):
+        cur.execute("alter task child add after s2.p")
+
+
 def test_alter_task_add_after_cycle_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select 1")

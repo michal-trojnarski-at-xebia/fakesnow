@@ -492,3 +492,6 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
     result column name (`SYSTEM$TASK_DEPENDENTS_ENABLE('<arg as written>')`) and whether it also resumes the root's
     finalizer; `ADD AFTER` on a task that has a schedule (currently `SCHEDULED_CHILD`) or that already has children
     (merging graphs is not rejected); `UNSET` of an unknown property (`INVALID_PROPERTY`).
+11. `ALTER TASK ... REMOVE AFTER` of a task that isn't a predecessor: raises or is a no-op (fakesnow: silent no-op).
+12. `ALTER TASK ... SUSPEND` of an already suspended task: whether it overwrites `last_suspended_on` and
+    `last_suspended_reason` (fakesnow: overwrites, with `USER_SUSPENDED`).

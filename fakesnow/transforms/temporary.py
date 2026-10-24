@@ -15,7 +15,8 @@ def temporary_objects(
 
     DuckDB only creates temporary objects in the temp catalog, so CREATE TEMPORARY TABLE|VIEW loses its qualifiers.
     The schema it was created in is kept in temporary_owner for TemporaryObjects.record. A qualified reference to a
-    temporary object resolves to it only from that schema, as in Snowflake.
+    temporary object resolves to it only from that schema, as in Snowflake, and any reference from another schema
+    is qualified so it does not resolve to the temporary object.
     """
     if (
         isinstance(expression, exp.Create)
@@ -30,16 +31,22 @@ def temporary_objects(
 
     if (
         isinstance(expression, exp.Table)
-        # An unqualified reference already resolves to the temporary object, which DuckDB searches first. Leaving
-        # it alone also keeps CTEs that share a temporary object's name.
-        and expression.args.get("db")
         and not _is_target(expression)
         and not _is_other_kind(expression)
+        and not _is_cte(expression)
         and (owner := temporaries.owner(expression.name))
-        and owner == (expression.catalog or current_database, expression.db)
     ):
-        expression.set("catalog", exp.to_identifier("temp"))
-        expression.set("db", exp.to_identifier("main"))
+        catalog = expression.catalog or current_database
+        schema = expression.db or current_schema
+        if owner == (catalog, schema):
+            # An unqualified reference already resolves to the temporary object, which DuckDB searches first.
+            if expression.args.get("db"):
+                expression.set("catalog", exp.to_identifier("temp"))
+                expression.set("db", exp.to_identifier("main"))
+        elif catalog and schema:
+            # Qualify fully so the reference resolves to a permanent object rather than the temporary one.
+            expression.set("catalog", exp.to_identifier(catalog))
+            expression.set("db", exp.to_identifier(schema))
 
     return expression
 
@@ -54,10 +61,15 @@ def _is_target(table: exp.Table) -> bool:
 
 
 def _is_other_kind(table: exp.Table) -> bool:
-    """Whether table names an object that cannot be a table or view, eg: DROP SEQUENCE."""
+    """Whether table names an object that cannot be a table or view, eg: DROP SEQUENCE or USE SCHEMA."""
     parent = table.parent
-    return (
+    return isinstance(parent, (exp.Use, exp.Show)) or (
         isinstance(parent, (exp.Drop, exp.Describe))
         and isinstance(kind := parent.args.get("kind"), str)
         and kind.upper() not in ("TABLE", "VIEW")
     )
+
+
+def _is_cte(table: exp.Table) -> bool:
+    """Whether table may name a CTE rather than a temporary object."""
+    return not table.args.get("db") and any(cte.alias == table.name for cte in table.root().find_all(exp.CTE))

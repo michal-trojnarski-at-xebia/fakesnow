@@ -520,3 +520,7 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
     `GRAPH_VERSION` (1); the column names of `TASK_DEPENDENTS` are those of SHOW TASKS (lower case) where the history
     functions' are upper case; `TASK_DEPENDENTS` includes the named task itself and a finalizer is a dependent of the
     task it finalizes; an unqualified `TASK_NAME` is looked up in the current schema.
+19. Session variables (`$v`) in a task body: whether Snowflake stores the body as written, resolving them when the task
+    runs (fakesnow: inlines them at CREATE time).
+20. The `RETURN_VALUE` recorded for `INSERT ... SELECT system$set_return_value(...)` (fakesnow: the row count) and for a
+    boolean value (fakesnow: `'True'`).

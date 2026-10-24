@@ -383,7 +383,7 @@ Not supported:
 
 - A scheduler. `SCHEDULE` is stored, but tasks never run on their own
 - Asynchronous `EXECUTE TASK`
-- `CALL` and Snowflake Scripting task bodies
+- `CALL` and Snowflake Scripting task bodies. In particular `CALL SYSTEM$SET_RETURN_VALUE(...)` isn't supported, use `SELECT SYSTEM$SET_RETURN_VALUE(...)` instead
 - `EXECUTE TASK ... RETRY LAST` and automatic retries
 - `USER_TASK_TIMEOUT_MS` is not enforced
 - Stream-triggered tasks

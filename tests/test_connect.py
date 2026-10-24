@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import tempfile
+import threading
 
 import pytest
 import snowflake.connector
@@ -79,6 +80,20 @@ def test_connect_concurrently(_fakesnow: None) -> None:
             # exceptions if any will be raised here. we want to avoid
             # duckdb.duckdb.TransactionException: TransactionContext Error: Catalog write-write conflict
             _ = future.result()
+
+
+def test_connect_concurrently_to_new_database_and_schema(_fakesnow: None) -> None:
+    # eg: dbt with threads > 1 opens connections at once, each creating the database and schema
+    threads = 8
+    barrier = threading.Barrier(threads)
+
+    def connect() -> None:
+        barrier.wait()
+        snowflake.connector.connect(database="newdb", schema="newschema").close()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+        for future in [executor.submit(connect) for _ in range(threads)]:
+            future.result()
 
 
 def test_connect_db_path_can_create_database() -> None:

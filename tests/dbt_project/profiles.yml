@@ -10,7 +10,7 @@ fsproj:
       warehouse: WH
       database: DBT_DB
       schema: ANALYTICS
-      threads: 1
+      threads: 4
       # set by tests in server mode, empty (and ignored by fakesnow) in patch mode
       host: "{{ env_var('FAKESNOW_HOST', '') }}"
       port: "{{ env_var('FAKESNOW_PORT', '443') | as_number }}"

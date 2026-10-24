@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from typing import Any
 
 import duckdb
@@ -26,6 +27,8 @@ class FakeSnow:
         self.nop_regexes = nop_regexes
 
         self.results_cache: dict[str, tuple] = {}
+        # connecting may create the database and schema, which concurrent connections would race on
+        self._connect_lock = threading.Lock()
         # SQLGlot's DuckDB transpilation still emits legacy arrow lambdas; keep the
         # DuckDB 2.0 compatibility setting enabled.
         self.duck_conn = duckdb.connect(database=":memory:", config={"lambda_syntax": "ENABLE_SINGLE_ARROW"})
@@ -51,14 +54,15 @@ class FakeSnow:
         # https://github.com/duckdb/duckdb/blob/18254ec/tools/pythonpkg/src/pyconnection.cpp#L1440
         # and to make connections thread-safe see
         # https://duckdb.org/docs/api/python/overview.html#using-connections-in-parallel-python-programs
-        return fakes.FakeSnowflakeConnection(
-            self.duck_conn.cursor(),
-            self.results_cache,
-            database,
-            schema,
-            create_database=self.create_database_on_connect,
-            create_schema=self.create_schema_on_connect,
-            db_path=self.db_path,
-            nop_regexes=nop_regexes or self.nop_regexes,
-            **kwargs,
-        )
+        with self._connect_lock:
+            return fakes.FakeSnowflakeConnection(
+                self.duck_conn.cursor(),
+                self.results_cache,
+                database,
+                schema,
+                create_database=self.create_database_on_connect,
+                create_schema=self.create_schema_on_connect,
+                db_path=self.db_path,
+                nop_regexes=nop_regexes or self.nop_regexes,
+                **kwargs,
+            )

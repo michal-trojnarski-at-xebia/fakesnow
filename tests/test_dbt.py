@@ -44,11 +44,9 @@ class TestBuildTwicePatchMode:
     def cur(self, tmp_path_factory: pytest.TempPathFactory) -> Iterator[SnowflakeCursor]:
         project = copy_project(tmp_path_factory.mktemp("dbt"))
         with fakesnow.patch():
+            # the first build connects from several threads at once to a database that doesn't exist yet
             for _ in range(2):
-                run_dbt(project, "seed")
-                run_dbt(project, "run")
-                run_dbt(project, "snapshot")
-                run_dbt(project, "test")
+                run_dbt(project, "build")
             with snowflake.connector.connect(database="dbt_db", schema="analytics") as conn:
                 yield conn.cursor()
 

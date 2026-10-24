@@ -318,3 +318,10 @@ def test_use_qualified_schema_updates_current_database(dcur: snowflake.connector
     dcur.execute("SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()")
 
     assert dcur.fetchall() == [{"current_database()": "DB2", "current_schema()": "SCHEMA2"}]
+
+
+def test_connect_with_query_tag_session_parameter(_fakesnow: None):
+    with snowflake.connector.connect(session_parameters={"QUERY_TAG": "dbt"}) as conn:
+        cur = conn.cursor(snowflake.connector.cursor.DictCursor)
+        cur.execute("SHOW PARAMETERS LIKE 'QUERY_TAG'")
+        assert cur.fetchall()[0]["value"] == "dbt"

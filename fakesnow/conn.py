@@ -57,6 +57,7 @@ class FakeSnowflakeConnection:
         self.table_stages = TableStages(duck_conn, self.temporaries)
         self.results_cache = results_cache
         self._autocommit = kwargs.get("autocommit", True)
+        self.query_tag: str = (kwargs.get("session_parameters") or {}).get("QUERY_TAG") or ""
         self._in_transaction = False
 
         # create database if needed

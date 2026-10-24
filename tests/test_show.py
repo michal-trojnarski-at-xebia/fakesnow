@@ -566,7 +566,15 @@ TIMEZONE_PARAMETER = {
     "description": "time zone",
     "type": "STRING",
 }
-SESSION_PARAMETERS = [QUOTED_IDENTIFIERS_PARAMETER, TIMEZONE_PARAMETER]
+QUERY_TAG_PARAMETER = {
+    "key": "QUERY_TAG",
+    "value": "",
+    "default": "",
+    "level": "",
+    "description": "String (up to 2000 characters) used to tag statements executed by the session",
+    "type": "STRING",
+}
+SESSION_PARAMETERS = [QUOTED_IDENTIFIERS_PARAMETER, TIMEZONE_PARAMETER, QUERY_TAG_PARAMETER]
 
 
 def test_show_parameters_comments(dcur: snowflake.connector.cursor.SnowflakeCursor):
@@ -713,3 +721,22 @@ def test_show_warehouses(dcur: snowflake.connector.cursor.SnowflakeCursor):
         "owner_role_type",
         "resource_constraint",
     ]
+
+
+def test_show_parameters_query_tag_default(dcur: snowflake.connector.cursor.SnowflakeCursor):
+    dcur.execute("SHOW PARAMETERS LIKE 'QUERY_TAG' IN SESSION")
+    assert dcur.fetchall() == [QUERY_TAG_PARAMETER]
+
+
+def test_alter_session_set_query_tag(dcur: snowflake.connector.cursor.SnowflakeCursor):
+    dcur.execute("ALTER SESSION SET QUERY_TAG = 'nightly'")
+    assert dcur.fetchall() == [{"status": "Statement executed successfully."}]
+    dcur.execute("SHOW PARAMETERS LIKE 'query_tag' IN SESSION")
+    assert dcur.fetchall() == [QUERY_TAG_PARAMETER | {"value": "nightly", "level": "SESSION"}]
+
+
+def test_query_tag_unset_restores_default(dcur: snowflake.connector.cursor.SnowflakeCursor):
+    dcur.execute('ALTER SESSION SET QUERY_TAG = $$it\'s {"a": 1}$$')
+    dcur.execute("ALTER SESSION UNSET QUERY_TAG")
+    dcur.execute("SHOW PARAMETERS LIKE 'QUERY_TAG'")
+    assert dcur.fetchall() == [QUERY_TAG_PARAMETER]

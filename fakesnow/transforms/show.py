@@ -323,7 +323,7 @@ WHERE 0 = 1;
 """
 
 
-def show_parameters(expression: Expr) -> Expr:
+def show_parameters(expression: Expr, query_tag: str = "") -> Expr:
     """Transform SHOW PARAMETERS.
 
     Only session scope (the default, IN SESSION, or FOR SESSION) is supported.
@@ -358,12 +358,17 @@ def show_parameters(expression: Expr) -> Expr:
     ):
         raise NotImplementedError(expression.sql(dialect="snowflake"))
 
+    tag = exp.Literal.string(query_tag).sql(dialect="duckdb")
+    level = "'SESSION'" if query_tag else "''"
+
     # Only list supported parameters, so the reported values match behaviour.
-    query = """
+    query = f"""
         SELECT * FROM (VALUES
             ('QUOTED_IDENTIFIERS_IGNORE_CASE', 'false', 'false', '',
              'If true, the case of quoted identifiers is ignored', 'BOOLEAN'),
-            ('TIMEZONE', 'Etc/UTC', 'America/Los_Angeles', 'ACCOUNT', 'time zone', 'STRING')
+            ('TIMEZONE', 'Etc/UTC', 'America/Los_Angeles', 'ACCOUNT', 'time zone', 'STRING'),
+            ('QUERY_TAG', {tag}, '', {level},
+             'String (up to 2000 characters) used to tag statements executed by the session', 'STRING')
         ) AS parameters("key", "value", "default", "level", "description", "type")
     """
     if like is not None:

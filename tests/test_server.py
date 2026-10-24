@@ -395,6 +395,14 @@ def test_server_session_heartbeat_invalid_authorization(server: dict) -> None:
     assert response.json()["message"] == "User must login again to access the service."
 
 
+def test_server_query_tag_session_parameter(server: dict) -> None:
+    params = server["session_parameters"] | {"QUERY_TAG": "dbt"}
+    with snowflake.connector.connect(**server | {"session_parameters": params}) as conn:
+        cur = conn.cursor(snowflake.connector.cursor.DictCursor)
+        cur.execute("SHOW PARAMETERS LIKE 'QUERY_TAG'")
+        assert cur.fetchall()[0]["value"] == "dbt"
+
+
 def test_server_nop_regexes(server: dict) -> None:
     with snowflake.connector.connect(**server | {"session_parameters": {"nop_regexes": ["^CALL.*"]}}) as conn:
         cur = conn.cursor()

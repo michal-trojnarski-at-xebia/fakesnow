@@ -99,7 +99,9 @@ async def login_request(request: Request) -> JSONResponse:
     fs = instance_for(session_params.get("FAKESNOW_DB_PATH") or default_db_path)
     token = secrets.token_urlsafe(32)
     logger.info(f"Session login {database=} {schema=} {nop_regexes=}")
-    sessions[token] = fs.connect(database, schema, nop_regexes=nop_regexes, autocommit=autocommit)
+    sessions[token] = fs.connect(
+        database, schema, nop_regexes=nop_regexes, autocommit=autocommit, session_parameters=session_params
+    )
     return JSONResponse(
         {
             "data": {

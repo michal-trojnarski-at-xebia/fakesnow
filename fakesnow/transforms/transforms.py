@@ -1503,6 +1503,9 @@ def alter_session(expression: Expr) -> Expr:
         - SET ... = true       => Not implemented
     - AUTOCOMMIT:
         - SET ... = true/false => success (returns NOP success with side effect arg)
+    - QUERY_TAG:
+        - SET ... = '<tag>'    => success (returns NOP success with side effect arg)
+        - UNSET ...            => success (side effect arg is the empty tag)
     """
 
     if (
@@ -1534,6 +1537,19 @@ def alter_session(expression: Expr) -> Expr:
             ):
                 new = SUCCESS_NOP.copy()
                 new.args["set_autocommit"] = rhs.this
+                return new
+
+            elif name == "QUERY_TAG":
+                tag = ""
+                if not alter_session.args.get("unset"):
+                    rhs = items[0].this.args.get("expression") if isinstance(items[0].this, exp.EQ) else None
+                    if not isinstance(rhs, (exp.Literal, exp.RawString)) or (
+                        isinstance(rhs, exp.Literal) and not rhs.is_string
+                    ):
+                        raise NotImplementedError(expression.sql(dialect="snowflake"))
+                    tag = rhs.name
+                new = SUCCESS_NOP.copy()
+                new.args["set_query_tag"] = tag
                 return new
 
         raise NotImplementedError(expression.sql(dialect="snowflake"))

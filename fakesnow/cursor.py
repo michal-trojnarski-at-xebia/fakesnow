@@ -358,7 +358,7 @@ class FakeSnowflakeCursor:
             .transform(transforms.show_databases, copy=False)
             .transform(transforms.show_functions, copy=False)
             .transform(transforms.show_procedures, copy=False)
-            .transform(transforms.show_parameters, copy=False)
+            .transform(lambda e: transforms.show_parameters(e, self._conn.query_tag), copy=False)
             .transform(transforms.show_warehouses, copy=False)
             .transform(lambda e: transforms.show_schemas(e, self._conn.database), copy=False)
             .transform(lambda e: transforms.show_tables_etc(e, self._conn.database, self._conn.schema), copy=False)
@@ -553,6 +553,9 @@ class FakeSnowflakeCursor:
             self._conn._schema = set_schema
             self._conn.schema_set = True
             result_sql = SQL_SUCCESS
+
+        elif (set_query_tag := transformed.args.get("set_query_tag")) is not None:
+            self._conn.query_tag = set_query_tag
 
         elif (set_autocommit := transformed.args.get("set_autocommit")) is not None:
             self._conn.autocommit(set_autocommit)

@@ -153,6 +153,46 @@ def test_qualified_temporary_table_is_session_isolated(conn: snowflake.connector
         other.cursor().execute("select * from db1.schema1.tt")
 
 
+def test_temporary_table_clone_is_created_in_its_schema(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create schema db1.other")
+    cur.execute("use schema schema1")
+    cur.execute("create table db1.schema1.y (id int)")
+    cur.execute("insert into db1.schema1.y values (1)")
+    cur.execute("create temporary table db1.other.x clone db1.schema1.y")
+    cur.execute("select id from db1.other.x")
+    assert cur.fetchall() == [(1,)]
+
+
+def test_temporary_table_clone_is_not_created_in_current_schema(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create schema db1.other")
+    cur.execute("use schema schema1")
+    cur.execute("create table db1.schema1.y (id int)")
+    cur.execute("create temporary table db1.other.x clone db1.schema1.y")
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="does not exist"):
+        cur.execute("select * from db1.schema1.x")
+
+
+def test_temporary_table_clone_is_session_isolated(conn: snowflake.connector.SnowflakeConnection):
+    conn.cursor().execute("create table db1.schema1.y (id int)")
+    conn.cursor().execute("create temporary table db1.schema1.x clone db1.schema1.y")
+    with (
+        snowflake.connector.connect(database="db1", schema="schema1") as other,
+        pytest.raises(snowflake.connector.errors.ProgrammingError, match="does not exist"),
+    ):
+        other.cursor().execute("select * from db1.schema1.x")
+
+
+def test_create_or_replace_temporary_table_clone_beside_permanent_of_same_name(
+    cur: snowflake.connector.cursor.SnowflakeCursor,
+):
+    cur.execute("create schema db1.other")
+    cur.execute("use schema schema1")
+    cur.execute("create table db1.schema1.y (id int)")
+    cur.execute("create table db1.schema1.z (id int)")
+    cur.execute("create or replace temporary table db1.other.z clone db1.schema1.y")
+    assert cur.fetchall() == [("Table Z successfully created.",)]
+
+
 def test_alter_table_swap_with(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
     cur.execute("create table a (x int)")
     cur.execute("insert into a values (1)")

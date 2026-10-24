@@ -157,23 +157,18 @@ def array_agg_within_group(expression: Expr) -> Expr:
 
 
 def create_clone(expression: Expr) -> Expr:
-    """Transform create table clone to create table as select."""
+    """Transform create table clone to create table as select.
+
+    The rest of the CREATE is kept, eg: OR REPLACE, TEMPORARY, and where temporary_objects placed it.
+    """
 
     if (
         isinstance(expression, exp.Create)
         and str(expression.args.get("kind")).upper() == "TABLE"
         and (clone := expression.find(exp.Clone))
     ):
-        return exp.Create(
-            this=expression.this,
-            kind="TABLE",
-            expression=exp.Select(
-                expressions=[
-                    exp.Star(),
-                ],
-                from_=exp.From(this=clone.this),
-            ),
-        )
+        expression.set("clone", None)
+        expression.set("expression", exp.Select(expressions=[exp.Star()], from_=exp.From(this=clone.this)))
     return expression
 
 

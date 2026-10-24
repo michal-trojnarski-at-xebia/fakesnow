@@ -767,3 +767,16 @@ def test_merge_in_another_schema_after_merge(cur: snowflake.connector.cursor.Sno
         "merge into t2 using (select 2 as id) s on t2.id = s.id when not matched then insert (id) values (s.id)"
     )
     assert cur.fetchall() == [(1,)]
+
+
+def test_merge_insert_values_subquery_keeps_its_own_columns(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table t (id int)")
+    cur.execute("create table s (id int)")
+    cur.execute("insert into s values (1)")
+    cur.execute("create table lookup (id int)")
+    cur.execute("insert into lookup values (42)")
+    cur.execute(
+        "merge into t using s on t.id = s.id when not matched then insert (id) values ((select id from lookup))"
+    )
+    cur.execute("select id from t")
+    assert cur.fetchall() == [(42,)]

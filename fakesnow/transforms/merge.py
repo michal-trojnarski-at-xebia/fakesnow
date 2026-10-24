@@ -38,9 +38,20 @@ def _qualify_insert_values(merge_expr: exp.Merge) -> None:
         then = w.args.get("then")
         if w.args.get("matched") or not isinstance(then, exp.Insert):
             continue
-        for col in then.expression.find_all(exp.Column):
-            if not col.args.get("table"):
+        values = then.expression
+        for col in values.find_all(exp.Column):
+            if not col.args.get("table") and not _in_subquery(col, values):
                 col.set("table", source_id.copy())
+
+
+def _in_subquery(node: Expr, stop: Expr) -> bool:
+    """Whether node is inside a query nested within stop, whose columns resolve in that query's own scope."""
+    parent = node.parent
+    while parent is not None and parent is not stop:
+        if isinstance(parent, exp.Query):
+            return True
+        parent = parent.parent
+    return False
 
 
 def _create_merge_candidates(merge_expr: exp.Merge) -> Expr:

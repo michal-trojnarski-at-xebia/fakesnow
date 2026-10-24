@@ -267,6 +267,38 @@ create table if not exists ${catalog}._fs_information_schema._fs_load_history (
     """
 )
 
+# predecessors and finalize hold unqualified names of tasks in the same schema
+SQL_CREATE_TASKS_TABLE = Template(
+    """
+create table if not exists ${catalog}._fs_information_schema._fs_tasks (
+    created_on TIMESTAMPTZ,
+    name VARCHAR,
+    id VARCHAR,
+    schema_name VARCHAR,
+    owner VARCHAR,
+    comment VARCHAR,
+    warehouse VARCHAR,
+    schedule VARCHAR,
+    predecessors VARCHAR[],
+    state VARCHAR,
+    definition VARCHAR,
+    condition VARCHAR,
+    finalize VARCHAR,
+    config VARCHAR,
+    error_integration VARCHAR,
+    success_integration VARCHAR,
+    overlap_policy VARCHAR,
+    allow_overlapping_execution BOOLEAN,
+    properties JSON,
+    session_parameters JSON,
+    last_committed_on TIMESTAMPTZ,
+    last_suspended_on TIMESTAMPTZ,
+    last_suspended_reason VARCHAR,
+    PRIMARY KEY (schema_name, name)
+)
+    """
+)
+
 
 SQL_CREATE_GLOBAL_INFORMATION_SCHEMA_STAGES_TABLE = """
 CREATE TABLE IF NOT EXISTS _fs_global._fs_information_schema._fs_stages (
@@ -314,6 +346,7 @@ def per_db_creation_sql(catalog: str) -> str:
         {SQL_CREATE_INFORMATION_SCHEMA_SCHEMATA_VIEW.substitute(catalog=catalog)};
         {SQL_CREATE_INFORMATION_SCHEMA_VIEWS_VIEW.substitute(catalog=catalog)};
         {SQL_CREATE_LOAD_HISTORY_TABLE.substitute(catalog=catalog)};
+        {SQL_CREATE_TASKS_TABLE.substitute(catalog=catalog)};
     """
 
 

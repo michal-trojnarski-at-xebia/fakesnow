@@ -26,6 +26,7 @@ import fakesnow.checks as checks
 import fakesnow.expr as expr
 import fakesnow.info_schema as info_schema
 import fakesnow.macros as macros
+import fakesnow.tasks as tasks
 import fakesnow.transforms as transforms
 from fakesnow import logger
 from fakesnow.copy_into import copy_into
@@ -305,6 +306,7 @@ class FakeSnowflakeCursor:
     def _transform(self, expression: Expr, params: MutableParams | None) -> Expr:
         return (
             expression.transform(lambda e: transforms.identifier(e, params), copy=False)
+            .transform(tasks.task_statement, copy=False)
             .transform(transforms.upper_case_unquoted_identifiers, copy=False)
             .transform(
                 lambda e: transforms.temporary_objects(
@@ -534,6 +536,10 @@ class FakeSnowflakeCursor:
                     self._conn.temporaries,
                     params,
                 )
+            elif task_statement := transformed.args.get("task_statement"):
+                sql = tasks.execute(task_statement, self._conn)
+                logger.log_sql(sql, params)
+                self._duck_conn.execute(sql)
             elif transformed.args.get("create_file_format_name"):
                 # File formats persist without committing the caller's DML. A separate DuckDB
                 # cursor uses an independent transaction, avoiding cross-database writes too.
@@ -699,6 +705,10 @@ class FakeSnowflakeCursor:
 
             elif cmd.startswith("DROP") and ident:
                 result_sql = SQL_DROPPED.substitute(name=_escape_literal(ident))
+
+                table = transformed.find(exp.Table)
+                if cmd == "DROP SCHEMA" and table and table.db and (table.catalog or self._conn.database):
+                    tasks.drop_schema(self._duck_conn, table.catalog or cast(str, self._conn.database), table.db)
 
                 # if dropping the current database/schema then reset conn metadata
                 if cmd == "DROP DATABASE" and ident == self._conn.database:

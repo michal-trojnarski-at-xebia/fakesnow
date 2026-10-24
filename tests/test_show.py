@@ -744,6 +744,11 @@ def test_query_tag_unset_restores_default(dcur: snowflake.connector.cursor.Snowf
     assert dcur.fetchall() == [QUERY_TAG_PARAMETER]
 
 
+def test_alter_session_set_several_parameters_not_implemented(dcur: snowflake.connector.cursor.SnowflakeCursor):
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="not implemented"):
+        dcur.execute("ALTER SESSION SET QUERY_TAG = 'a', TIMEZONE = 'UTC'")
+
+
 def _ownership(granted_on: str, name: str, role: str = "PUBLIC") -> dict:
     return {
         "created_on": IsDatetime(),

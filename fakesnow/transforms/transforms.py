@@ -1563,6 +1563,8 @@ def alter_session(expression: Expr) -> Expr:
     - QUERY_TAG:
         - SET ... = '<tag>'    => success (returns NOP success with side effect arg)
         - UNSET ...            => success (side effect arg is the empty tag)
+
+    Setting or unsetting several parameters in one statement is not implemented.
     """
 
     if (
@@ -1572,7 +1574,8 @@ def alter_session(expression: Expr) -> Expr:
     ):
         items = alter_session.args.get("expressions") or []
 
-        if items and isinstance(items[0], exp.SetItem) and (ident := items[0].find(exp.Identifier)):
+        # only one parameter is handled at a time, so don't silently ignore the rest
+        if len(items) == 1 and isinstance(items[0], exp.SetItem) and (ident := items[0].find(exp.Identifier)):
             name = ident.this.upper()
 
             if name == "QUOTED_IDENTIFIERS_IGNORE_CASE" and (

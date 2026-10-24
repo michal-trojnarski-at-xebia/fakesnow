@@ -95,9 +95,18 @@ same `FakeSnow` instance.
 ```python
 def test_parse_create_task_with_schedule_and_body():
     s = parse_task_statement("create task t1 schedule = '5 minute' as insert into x values (1)")
-    assert s == CreateTask(name=TaskName(None, None, "T1"), replace=False, if_not_exists=False, or_alter=False,
-        properties={"SCHEDULE": "5 minute"}, after=[], condition=None,
-        definition="insert into x values (1)", clone_of=None)
+    assert s == CreateTask(
+        name=TaskName(None, None, "T1"),
+        replace=False,
+        if_not_exists=False,
+        or_alter=False,
+        properties={"SCHEDULE": "5 minute"},
+        after=[],
+        condition=None,
+        definition="insert into x values (1)",
+        clone_of=None,
+    )
+
 
 def test_parse_create_task_after_when_finalize():
     s = parse_task_statement('create or replace task db1.s1."Child" after a, s1.b when 1 = 1 as select 1')
@@ -105,26 +114,50 @@ def test_parse_create_task_after_when_finalize():
     assert s.after == [TaskName(None, None, "A"), TaskName(None, "S1", "B")]
     assert s.condition == "1 = 1" and s.definition == "select 1"
 
+
 def test_parse_create_task_clone():
     assert parse_task_statement("create task t2 clone t1").clone_of == TaskName(None, None, "T1")
 
+
 def test_parse_alter_task_forms():  # one assert per form is acceptable here: a parser table test
     assert parse_task_statement("alter task t1 resume").action == "RESUME"
-    assert parse_task_statement("alter task if exists t1 remove after a, b").tasks == [TaskName(None, None, "A"), TaskName(None, None, "B")]
-    assert parse_task_statement("alter task t1 set comment = 'x', user_task_timeout_ms = 10").properties == {"COMMENT": "x", "USER_TASK_TIMEOUT_MS": "10"}
+    assert parse_task_statement("alter task if exists t1 remove after a, b").tasks == [
+        TaskName(None, None, "A"),
+        TaskName(None, None, "B"),
+    ]
+    assert parse_task_statement("alter task t1 set comment = 'x', user_task_timeout_ms = 10").properties == {
+        "COMMENT": "x",
+        "USER_TASK_TIMEOUT_MS": "10",
+    }
     assert parse_task_statement("alter task t1 unset comment, schedule").unset == ["COMMENT", "SCHEDULE"]
     assert parse_task_statement("alter task t1 modify as select 2").text == "select 2"
     assert parse_task_statement("alter task t1 remove when").action == "REMOVE_WHEN"
 
+
 def test_parse_show_tasks_filters():
-    assert parse_task_statement("show terse tasks like 'T%' in schema db1.s1 starts with 'T' root only limit 5 from 'T1'") == ShowTasks(
-        terse=True, like="T%", scope="SCHEMA", scope_name=["DB1", "S1"], starts_with="T", root_only=True, limit=5, limit_from="T1")
+    assert parse_task_statement(
+        "show terse tasks like 'T%' in schema db1.s1 starts with 'T' root only limit 5 from 'T1'"
+    ) == ShowTasks(
+        terse=True,
+        like="T%",
+        scope="SCHEMA",
+        scope_name=["DB1", "S1"],
+        starts_with="T",
+        root_only=True,
+        limit=5,
+        limit_from="T1",
+    )
+
 
 def test_parse_execute_task_using_config():
-    assert parse_task_statement("""execute task t1 using config = '{"a": 1}'""") == ExecuteTask(TaskName(None, None, "T1"), '{"a": 1}')
+    assert parse_task_statement("""execute task t1 using config = '{"a": 1}'""") == ExecuteTask(
+        TaskName(None, None, "T1"), '{"a": 1}'
+    )
+
 
 def test_parse_non_task_statement_is_none():
     assert parse_task_statement("create table t (x int)") is None
+
 
 def test_describe_task_parses_as_command():
     assert isinstance(fakesnow.dialect.parse_one("desc task t1"), exp.Command)

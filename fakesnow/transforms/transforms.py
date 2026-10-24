@@ -516,7 +516,10 @@ def extract_comment_on_table(expression: Expr) -> Expr:
             new = expression.copy()
             new_props: exp.Properties = new.args["properties"]
             new_props.set("expressions", other_props)
-            new.args["table_comment"] = (table, comment)
+            # only record a comment that is present, eg: not for the TEMPORARY or TRANSIENT property alone,
+            # because recording writes to the global database, which a transaction can't do after other writes
+            if comment is not None:
+                new.args["table_comment"] = (table, comment)
             return new
     elif (
         isinstance(expression, exp.Comment)

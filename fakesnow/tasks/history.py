@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import snowflake.connector.errors
 import sqlglot
 from sqlglot import Expr, exp
 
@@ -17,6 +18,10 @@ from fakesnow.tasks.statements import parse_task_name
 DEFAULT_RESULT_LIMIT = 100
 GRAPH_VERSION = 1
 ERROR_STATES = ("FAILED", "CANCELLED")
+
+_TIME_RANGE_ARGS = {"SCHEDULED_TIME_RANGE_START", "SCHEDULED_TIME_RANGE_END"}
+_START = "_fs_range_start"
+_END = "_fs_range_end"
 
 _HISTORY_COLUMNS = """
     query_id AS QUERY_ID,
@@ -78,13 +83,21 @@ class _Args:
 
     def __init__(self, function: str, call: exp.Anonymous, allowed: set[str]) -> None:
         self.values: dict[str, object] = {}
+        # the time range bounds, which can be any scalar expression
+        self.expressions: dict[str, Expr] = {}
         for arg in call.expressions:
-            if not (isinstance(arg, exp.Kwarg) and isinstance(arg.expression, (exp.Literal, exp.Boolean, exp.Null))):
-                raise NotImplementedError(f"{function} only supports literal values for named arguments")
+            if not isinstance(arg, exp.Kwarg):
+                raise NotImplementedError(f"{function} only supports named arguments")
             name = arg.this.name.upper()
             if name not in allowed:
                 raise NotImplementedError(f"{function} doesn't support the argument {name}")
             value = arg.expression
+            if name in _TIME_RANGE_ARGS:
+                if not isinstance(value, exp.Null):
+                    self.expressions[name] = value
+                continue
+            if not isinstance(value, (exp.Literal, exp.Boolean, exp.Null)):
+                raise NotImplementedError(f"{function} only supports literal values for the argument {name}")
             if isinstance(value, exp.Boolean):
                 self.values[name] = value.this
             elif isinstance(value, exp.Null):
@@ -96,8 +109,18 @@ class _Args:
         value = self.values.get(name)
         return None if value is None else str(value)
 
-    def flag(self, name: str) -> bool:
-        return bool(self.values.get(name))
+    def flag(self, name: str, default: bool = False) -> bool:
+        """A boolean argument, which can also be given as the string 'true' or 'false'."""
+        value = self.values.get(name)
+        if value is None:
+            return default
+        if isinstance(value, str) and value.lower() in ("true", "false"):
+            return value.lower() == "true"
+        if isinstance(value, bool):
+            return value
+        raise snowflake.connector.errors.ProgrammingError(
+            msg=f"Invalid value [{value}] for argument {name}: expected a boolean.", errno=2023, sqlstate="22023"
+        )
 
     def limit(self) -> int:
         value = self.values.get("RESULT_LIMIT")
@@ -114,22 +137,33 @@ def _filters(args: _Args, database: str, columns: dict[str, str]) -> list[str]:
         filters.append("false")
     if args.flag("ERROR_ONLY"):
         filters.append("state in ({})".format(", ".join(_literal(s) for s in ERROR_STATES)))
-    if (value := args.get("SCHEDULED_TIME_RANGE_START")) is not None:
-        filters.append(f"scheduled_time >= {_literal(value)}::TIMESTAMPTZ")
-    if (value := args.get("SCHEDULED_TIME_RANGE_END")) is not None:
-        filters.append(f"scheduled_time <= {_literal(value)}::TIMESTAMPTZ")
+    # the expressions of the time range are spliced in by _select
+    if "SCHEDULED_TIME_RANGE_START" in args.expressions:
+        filters.append(f"scheduled_time >= {_START}::TIMESTAMPTZ")
+    if "SCHEDULED_TIME_RANGE_END" in args.expressions:
+        filters.append(f"scheduled_time <= {_END}::TIMESTAMPTZ")
     if (value := args.get("ROOT_TASK_ID")) is not None:
         filters.append(f"root_task_id = {_literal(value)}")
     return filters
 
 
-def _select(columns: str, table: str, filters: list[str], limit: int) -> str:
+def _select(columns: str, table: str, filters: list[str], args: _Args) -> exp.Expr:
     where = f" where {' and '.join(filters)}" if filters else ""
     # the newest rows are kept by the limit, and returned newest first
-    return f"select {columns} from {table}{where} order by scheduled_time desc, completed_time desc limit {limit}"
+    select = sqlglot.parse_one(
+        f"select {columns} from {table}{where} order by scheduled_time desc, completed_time desc limit {args.limit()}",
+        read="duckdb",
+    )
+    # splice in the Snowflake expressions, so the transforms that follow translate them like any other
+    for placeholder, name in ((_START, "SCHEDULED_TIME_RANGE_START"), (_END, "SCHEDULED_TIME_RANGE_END")):
+        if name in args.expressions:
+            for column in list(select.find_all(exp.Column)):
+                if column.name == placeholder:
+                    column.replace(exp.Paren(this=args.expressions[name].copy()))
+    return select
 
 
-def _task_history(call: exp.Anonymous, database: str, current_schema: str | None) -> str:
+def _task_history(call: exp.Anonymous, database: str, current_schema: str | None) -> exp.Expr:
     args = _Args(
         "TASK_HISTORY",
         call,
@@ -146,30 +180,31 @@ def _task_history(call: exp.Anonymous, database: str, current_schema: str | None
     )
     filters = _filters(args, database, {"TASK_NAME": "name", "SCHEMA_NAME": "schema_name"})
     columns = _HISTORY_COLUMNS.format(database=_literal(database), graph_version=GRAPH_VERSION)
-    return _select(columns, history_table(database), filters, args.limit())
+    return _select(columns, history_table(database), filters, args)
 
 
-def _complete_task_graphs(call: exp.Anonymous, database: str, current_schema: str | None) -> str:
+def _complete_task_graphs(call: exp.Anonymous, database: str, current_schema: str | None) -> exp.Expr:
     args = _Args("COMPLETE_TASK_GRAPHS", call, {"RESULT_LIMIT", "ROOT_TASK_NAME", "ERROR_ONLY"})
     filters = _filters(args, database, {"ROOT_TASK_NAME": "root_task_name"})
     columns = _GRAPH_COLUMNS.format(database=_literal(database), graph_version=GRAPH_VERSION)
-    return _select(columns, graph_runs_table(database), filters, args.limit())
+    return _select(columns, graph_runs_table(database), filters, args)
 
 
-def _task_dependents(call: exp.Anonymous, database: str, current_schema: str | None) -> str:
+def _task_dependents(call: exp.Anonymous, database: str, current_schema: str | None) -> exp.Expr:
     args = _Args("TASK_DEPENDENTS", call, {"TASK_NAME", "RECURSIVE"})
     task_name = args.get("TASK_NAME")
     if task_name is None:
         raise NotImplementedError("TASK_DEPENDENTS needs the TASK_NAME argument")
     name = parse_task_name(task_name)
     schema = name.schema or current_schema
-    recursive = args.values.get("RECURSIVE", True)
+    recursive = args.flag("RECURSIVE", default=True)
     start = f"name = {_literal(name.name)}" + (f" and schema_name = {_literal(schema)}" if schema else "")
     # the finalizer of a task is one of its dependents
     child = "(list_contains(t.predecessors, d.name) or t.finalize = d.name)"
     depth = "" if recursive else " and d.depth < 1"
     tasks = tasks_table(name.database or database)
-    return f"""
+    return sqlglot.parse_one(
+        f"""
     with recursive deps(schema_name, name, depth) as (
         select schema_name, name, 0 from {tasks} where {start}
         union all
@@ -178,10 +213,12 @@ def _task_dependents(call: exp.Anonymous, database: str, current_schema: str | N
     )
     select r.* from ({rows_sql(name.database or database)}) r
     where (r.schema_name, r.name) in (select schema_name, name from deps)
-    order by r.schema_name, r.name"""
+    order by r.schema_name, r.name""",
+        read="duckdb",
+    )
 
 
-_FUNCTIONS: dict[str, Callable[[exp.Anonymous, str, str | None], str]] = {
+_FUNCTIONS: dict[str, Callable[[exp.Anonymous, str, str | None], exp.Expr]] = {
     "TASK_HISTORY": _task_history,
     "COMPLETE_TASK_GRAPHS": _complete_task_graphs,
     "TASK_DEPENDENTS": _task_dependents,
@@ -208,7 +245,7 @@ def task_table_functions(expression: Expr, current_database: str | None, current
     database = database or current_database
     if not database:
         raise checks.no_current_database_error(function)
-    select = sqlglot.parse_one(_FUNCTIONS[function](call, database, current_schema), read="duckdb")
+    select = _FUNCTIONS[function](call, database, current_schema)
     if function == "TASK_DEPENDENTS":
         # keep the lower case column names of SHOW TASKS, which the upper casing of identifiers would change
         for alias in select.find_all(exp.Alias):

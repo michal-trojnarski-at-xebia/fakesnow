@@ -1911,3 +1911,70 @@ def test_task_dependents_qualified_task_name(cur: snowflake.connector.cursor.Sno
     _dependents_graph(cur)
     cur.execute("select name from table(information_schema.task_dependents(task_name => 'db1.schema1.child'))")
     assert sorted(cur.fetchall()) == [("CHILD",), ("GRANDCHILD",)]
+
+
+def _two_runs(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
+    cur.execute("create task t1 as select 1")
+    cur.execute("execute task t1")
+
+
+def test_task_history_time_range_start_expression(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _two_runs(cur)
+    cur.execute(
+        "select name from table(information_schema.task_history("
+        "scheduled_time_range_start => dateadd('hour', -1, current_timestamp())))"
+    )
+    assert cur.fetchall() == [("T1",)]
+
+
+def test_task_history_time_range_start_expression_excludes_older(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _two_runs(cur)
+    cur.execute(
+        "select name from table(information_schema.task_history("
+        "scheduled_time_range_start => dateadd('hour', 1, current_timestamp())))"
+    )
+    assert cur.fetchall() == []
+
+
+def test_task_history_time_range_end_expression(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _two_runs(cur)
+    cur.execute(
+        "select name from table(information_schema.task_history("
+        "scheduled_time_range_end => dateadd('hour', -1, current_timestamp())))"
+    )
+    assert cur.fetchall() == []
+
+
+def test_task_history_time_range_end_includes_earlier(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _two_runs(cur)
+    cur.execute(
+        "select name from table(information_schema.task_history("
+        "scheduled_time_range_end => dateadd('hour', 1, current_timestamp())))"
+    )
+    assert cur.fetchall() == [("T1",)]
+
+
+def test_complete_task_graphs_error_only_false_string(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _two_runs(cur)
+    cur.execute("select root_task_name from table(information_schema.complete_task_graphs(error_only => 'false'))")
+    assert cur.fetchall() == [("T1",)]
+
+
+def test_task_history_error_only_true_string(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _two_runs(cur)
+    cur.execute("select name from table(information_schema.task_history(error_only => 'TRUE'))")
+    assert cur.fetchall() == []
+
+
+def test_task_history_error_only_invalid_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="boolean"):
+        cur.execute("select * from table(information_schema.task_history(error_only => 'maybe'))")
+
+
+def test_task_dependents_recursive_false_string(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _dependents_graph(cur)
+    cur.execute(
+        "select name from table(information_schema.task_dependents(task_name => 'root', recursive => 'false')) "
+        "order by name"
+    )
+    assert cur.fetchall() == [("CHILD",), ("ROOT",)]

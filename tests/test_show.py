@@ -885,8 +885,11 @@ def test_show_grants_on_missing_table(dcur: snowflake.connector.cursor.DictCurso
         dcur.execute("show grants on table db1.schema1.nope")
 
 
-def test_show_grants_to_role_not_implemented(dcur: snowflake.connector.cursor.DictCursor):
-    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="not implemented"):
+@pytest.mark.xfail(reason="SHOW GRANTS TO ROLE is not implemented", strict=True)
+def test_show_grants_to_missing_role(dcur: snowflake.connector.cursor.DictCursor):
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError, match="Role 'REPORTER' does not exist or not authorized"
+    ):
         dcur.execute("show grants to role reporter")
 
 

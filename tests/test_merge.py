@@ -720,7 +720,7 @@ def test_merge_insert_values_unqualified(cur: snowflake.connector.cursor.Snowfla
 
 
 def test_merge_insert_values_unqualified_quoted_with_aliases(cur: snowflake.connector.cursor.SnowflakeCursor):
-    # the shape dbt-snowflake's merge strategy sends
+    # the shape dbt-snowflake's merge strategy sends; the interaction of these clauses is the behaviour under test
     cur.execute('create table t1 ("ID" int, "V" varchar)')
     cur.execute("create table s2 (id int, v varchar)")
     cur.execute("insert into s2 values (2, 'b')")
@@ -732,3 +732,24 @@ def test_merge_insert_values_unqualified_quoted_with_aliases(cur: snowflake.conn
     )
     cur.execute("select id, v from t1")
     assert cur.fetchall() == [(2, "b")]
+
+
+def test_merge_aliased_source_update(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table t1 (id int, v varchar)")
+    cur.execute("insert into t1 values (1, 'a')")
+    cur.execute("create table s2 (id int, v varchar)")
+    cur.execute("insert into s2 values (1, 'z')")
+    cur.execute("merge into t1 using s2 as s on t1.id = s.id when matched then update set v = s.v")
+    assert cur.fetchall() == [(1,)]
+    cur.execute("select id, v from t1")
+    assert cur.fetchall() == [(1, "z")]
+
+
+def test_merge_aliased_target_update(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table t1 (id int, v varchar)")
+    cur.execute("insert into t1 values (1, 'a')")
+    cur.execute("create table s2 (id int, v varchar)")
+    cur.execute("insert into s2 values (1, 'z')")
+    cur.execute("merge into t1 as d using s2 on d.id = s2.id when matched then update set v = s2.v")
+    cur.execute("select id, v from t1")
+    assert cur.fetchall() == [(1, "z")]

@@ -227,3 +227,142 @@ def test_drop_schema_drops_its_tasks(cur: snowflake.connector.cursor.SnowflakeCu
     cur.execute("create schema s2")
     cur.execute("create task s2.t1 as select 1")
     assert cur.fetchall() == [("Task T1 successfully created.",)]
+
+
+def _start(cur: snowflake.connector.cursor.SnowflakeCursor, name: str) -> None:
+    cur.execute(f"update db1._fs_information_schema._fs_tasks set state = 'started' where name = '{name.upper()}'")
+
+
+def _create_children(cur: snowflake.connector.cursor.SnowflakeCursor, count: int, after: str | None = None) -> None:
+    for i in range(count):
+        cur.execute(f"create task c{i} {'after ' + after if after else ''} as select 1")
+
+
+def test_create_child_of_started_root_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root schedule = '1 minute' as select 1")
+    _start(cur, "root")
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"Unable to update graph with root task DB1\.SCHEMA1\.ROOT since that root task is not suspended\.",
+    ) as e:
+        cur.execute("create task child after root as select 1")
+    assert (e.value.errno, e.value.sqlstate) == (91089, "02000")
+
+
+def test_create_child_with_missing_predecessor_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError, match=r"Task 'DB1\.SCHEMA1\.NOPE' does not exist or not authorized"
+    ):
+        cur.execute("create task child after nope as select 1")
+
+
+def test_create_child_with_schedule_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"Task DB1\.SCHEMA1\.CHILD with predecessors or a finalized root cannot have a schedule\.",
+    ):
+        cur.execute("create task child schedule = '1 minute' after root as select 1")
+
+
+def test_create_child_in_other_schema_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create schema s2")
+    cur.execute("create task s2.root as select 1")
+    cur.execute("use schema schema1")  # create schema switches to the new schema
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"Task DB1\.SCHEMA1\.CHILD cannot depend on task DB1\.S2\.ROOT in a different schema\.",
+    ):
+        cur.execute("create task child after s2.root as select 1")
+
+
+def test_create_second_finalizer_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    cur.execute("create task fin1 finalize = root as select 1")
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"Invalid finalizer task DB1\.SCHEMA1\.FIN2: root task DB1\.SCHEMA1\.ROOT already has a finalizer\.",
+    ):
+        cur.execute("create task fin2 finalize = root as select 1")
+
+
+def test_create_finalizer_with_predecessor_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    cur.execute("create task other as select 1")
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"Invalid finalizer task DB1\.SCHEMA1\.FIN: a finalizer cannot have predecessors\.",
+    ):
+        cur.execute("create task fin finalize = root after other as select 1")
+
+
+def test_create_finalizer_with_children_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    cur.execute("create task fin as select 1")
+    cur.execute("create task child after fin as select 1")
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"Invalid finalizer task DB1\.SCHEMA1\.FIN: a finalizer cannot have child tasks\.",
+    ):
+        cur.execute("create or replace task fin finalize = root as select 1")
+
+
+def test_create_task_cycle_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    cur.execute("create task child after root as select 1")
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"Task graph cycle detected involving task DB1\.SCHEMA1\.ROOT\.",
+    ):
+        cur.execute("create or replace task root after child as select 1")
+
+
+def test_create_task_too_many_predecessors_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _create_children(cur, 101)
+    after = ", ".join(f"c{i}" for i in range(101))
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"Task DB1\.SCHEMA1\.JOIN exceeds the maximum of 100 predecessors\.",
+    ):
+        cur.execute(f"create task join after {after} as select 1")
+
+
+def test_create_task_too_many_children_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    _create_children(cur, 100, after="root")
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"Task DB1\.SCHEMA1\.ROOT exceeds the maximum of 100 child tasks\.",
+    ):
+        cur.execute("create task one_more after root as select 1")
+
+
+def test_drop_only_predecessor_makes_child_standalone(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    cur.execute("create task child after root as select 1")
+    cur.execute("drop task root")
+    assert _select(cur, "state, last_suspended_reason", "child") == [("suspended", "CHILD_BECAME_ROOT")]
+
+
+def test_drop_only_predecessor_clears_child_predecessors(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    cur.execute("create task child after root as select 1")
+    cur.execute("drop task root")
+    assert _select(cur, "array_length(predecessors)", "child") == [(0,)]
+
+
+def test_drop_root_makes_finalizer_standalone(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    cur.execute("create task fin finalize = root as select 1")
+    cur.execute("drop task root")
+    assert _select(cur, "state, finalize, last_suspended_reason", "fin") == [
+        ("suspended", None, "FINALIZER_BECAME_ROOT")
+    ]
+
+
+def test_drop_task_in_started_graph_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root schedule = '1 minute' as select 1")
+    cur.execute("create task child after root as select 1")
+    _start(cur, "root")
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="root task is not suspended"):
+        cur.execute("drop task child")

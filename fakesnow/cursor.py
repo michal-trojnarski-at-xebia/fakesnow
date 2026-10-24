@@ -364,7 +364,7 @@ class FakeSnowflakeCursor:
             .transform(transforms.show_functions, copy=False)
             .transform(
                 lambda e: transforms.show_grants(
-                    e, self._conn.database, self._conn.schema, self._conn.role, self._duck_conn
+                    e, self._conn.database, self._conn.schema, self._conn.role, self._duck_conn, self._conn.temporaries
                 ),
                 copy=False,
             )

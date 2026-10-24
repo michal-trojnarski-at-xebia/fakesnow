@@ -29,3 +29,23 @@ def test_revoke_is_accepted(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create table t1 (id int)")
     cur.execute("revoke select on table db1.schema1.t1 from role reporter")
     assert cur.fetchall() == [("Statement executed successfully.",)]
+
+
+def test_grant_on_all_tables_is_accepted(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("grant select, insert on all tables in schema schema1 to role reporter")
+    assert cur.fetchall() == [("Statement executed successfully.",)]
+
+
+def test_grant_on_future_tables_is_accepted(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("grant select on future tables in schema schema1 to role reporter")
+    assert cur.fetchall() == [("Statement executed successfully.",)]
+
+
+def test_grant_role_to_role_is_accepted(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("grant role analyst to role reporter")
+    assert cur.fetchall() == [("Statement executed successfully.",)]
+
+
+def test_revoke_on_all_tables_is_accepted(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("revoke select on all tables in schema schema1 from role reporter")
+    assert cur.fetchall() == [("Statement executed successfully.",)]

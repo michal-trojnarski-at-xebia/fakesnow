@@ -8,6 +8,7 @@ from duckdb import DuckDBPyConnection
 from sqlglot import Expr, TokenType, exp
 
 from fakesnow.expr import normalise_ident
+from fakesnow.temporary import TemporaryObjects
 
 
 def fs_global_creation_sql() -> str:
@@ -333,6 +334,7 @@ def show_grants(
     current_schema: str | None,
     role: str,
     duck_conn: DuckDBPyConnection,
+    temporaries: TemporaryObjects,
 ) -> Expr:
     """Transform SHOW GRANTS ON <kind> <name>.
 
@@ -382,7 +384,9 @@ def show_grants(
             "SELECT 1 FROM _fs_global._fs_information_schema._fs_show_objects "
             f"WHERE database_name = ? AND schema_name = ? AND name = ? AND kind = '{kind}'"
         )
-    if duck_conn.execute(exists_sql, names).fetchone() is None:
+    # temporary tables and views are kept out of the show views
+    is_temporary = kind in ("TABLE", "VIEW") and temporaries.owner(names[-1]) == (names[0], names[1])
+    if not is_temporary and duck_conn.execute(exists_sql, names).fetchone() is None:
         fqname = ".".join(names)
         raise snowflake.connector.errors.ProgrammingError(
             msg=f"SQL compilation error:\n{kind.capitalize()} '{fqname}' does not exist or not authorized.",

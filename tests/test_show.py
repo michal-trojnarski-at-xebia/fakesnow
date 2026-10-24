@@ -801,3 +801,9 @@ def test_show_grants_on_missing_table(dcur: snowflake.connector.cursor.DictCurso
 def test_show_grants_to_role_not_implemented(dcur: snowflake.connector.cursor.DictCursor):
     with pytest.raises(snowflake.connector.errors.ProgrammingError, match="not implemented"):
         dcur.execute("show grants to role reporter")
+
+
+def test_show_grants_on_temporary_table(dcur: snowflake.connector.cursor.DictCursor):
+    dcur.execute("create temporary table db1.schema1.tt (a int)")
+    dcur.execute("show grants on table db1.schema1.tt")
+    assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.TT")]

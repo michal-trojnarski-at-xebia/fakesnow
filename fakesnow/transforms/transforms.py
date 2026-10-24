@@ -648,7 +648,12 @@ def grant_revoke(expression: Expr) -> Expr:
 
     See https://docs.snowflake.com/en/sql-reference/sql/grant-privilege
     """
-    if isinstance(expression, (exp.Grant, exp.Revoke)):
+    # sqlglot parses forms it doesn't support (eg: ALL/FUTURE, role grants, shares) as a Command
+    if isinstance(expression, (exp.Grant, exp.Revoke)) or (
+        isinstance(expression, exp.Command)
+        and isinstance(expression.this, str)
+        and expression.this.upper() in ("GRANT", "REVOKE")
+    ):
         return SUCCESS_NOP.copy()
 
     return expression

@@ -1,3 +1,5 @@
+import contextlib
+
 import pytest
 import snowflake.connector
 import snowflake.connector.cursor
@@ -130,6 +132,28 @@ def test_qualified_temporary_table_not_visible_from_other_schema(cur: snowflake.
     cur.execute("create temporary table db1.schema1.tt (a int)")
     with pytest.raises(snowflake.connector.errors.ProgrammingError, match="does not exist"):
         cur.execute("select * from db1.other.tt")
+
+
+@pytest.mark.xfail(reason="temporary objects with the same name in different schemas are not implemented", strict=True)
+def test_temporary_tables_with_the_same_name_in_different_schemas(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create schema db1.other")
+    cur.execute("create temporary table db1.schema1.tt (a int)")
+    cur.execute("insert into db1.schema1.tt values (1)")
+    cur.execute("create temporary table db1.other.tt (a int)")
+    cur.execute("insert into db1.other.tt values (2)")
+    cur.execute("select a from db1.schema1.tt")
+    assert cur.fetchall() == [(1,)]
+
+
+def test_temporary_table_replaced_in_other_schema_keeps_first_rows(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create schema db1.other")
+    cur.execute("create temporary table db1.schema1.tt (a int)")
+    cur.execute("insert into db1.schema1.tt values (1)")
+    # creating a same-named temporary table in another schema doesn't touch the first one
+    with contextlib.suppress(snowflake.connector.errors.ProgrammingError):
+        cur.execute("create or replace temporary table db1.other.tt (a int)")
+    cur.execute("select a from db1.schema1.tt")
+    assert cur.fetchall() == [(1,)]
 
 
 def test_temporary_table_not_visible_unqualified_from_other_schema(

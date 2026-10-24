@@ -24,7 +24,11 @@ def temporary_objects(
         and expression.find(exp.TemporaryProperty)
         and (table := expression.find(exp.Table))
     ):
-        expression.args["temporary_owner"] = (table.catalog or current_database, table.db or current_schema)
+        owner = (table.catalog or current_database, table.db or current_schema)
+        if (existing := temporaries.owner(table.name)) and existing != owner:
+            # DuckDB names temporary objects without their schema, so this one would replace or clash with the other
+            raise NotImplementedError("Temporary objects with the same name in different schemas")
+        expression.args["temporary_owner"] = owner
         table.set("catalog", None)
         table.set("db", None)
         return expression

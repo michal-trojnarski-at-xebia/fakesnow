@@ -38,9 +38,8 @@ class TemporaryObjects:
         # Forget dropped objects here rather than tracking DROP, so the registry is bounded by live objects.
         live_oids = set(live.values())
         self._owners = {oid: owner for oid, owner in self._owners.items() if oid in live_oids}
-        # CREATE TEMP TABLE IF NOT EXISTS succeeds without creating anything when the name is already taken, even
-        # from another schema, so the OID may already be registered. Keep the schema it was created in; overwriting
-        # it would move the existing object to the current schema.
+        # CREATE TEMP TABLE IF NOT EXISTS succeeds without creating anything when the name is already taken, so the
+        # OID may already be registered. Keep the schema it was created in.
         self._owners.setdefault(live[table.name], (catalog, schema))
 
     def owner(self, name: str) -> tuple[str | None, str | None] | None:

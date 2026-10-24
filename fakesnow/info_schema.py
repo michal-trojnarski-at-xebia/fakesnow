@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from string import Template
 
 SQL_CREATE_GLOBAL_FS_INFORMATION_SCHEMA = """
@@ -330,6 +331,20 @@ def insert_table_comment_sql(catalog: str, schema: str, table: str, comment: str
         values ('{catalog}', '{schema}', '{table}', '{comment}')
         ON CONFLICT (ext_table_catalog, ext_table_schema, ext_table_name)
         DO UPDATE SET comment = excluded.comment
+    """
+
+
+def swap_table_comments_sql(catalog: str, schema: str, table: str, other: str) -> str:
+    # via a placeholder name because the name is part of the key
+    key = f"ext_table_catalog = '{catalog}' AND ext_table_schema = '{schema}'"
+    tmp = f"_fs_swap_{secrets.token_hex(8)}"
+    return f"""
+        UPDATE _fs_global._fs_information_schema._fs_tables_ext SET ext_table_name = '{tmp}'
+            WHERE {key} AND ext_table_name = '{table}';
+        UPDATE _fs_global._fs_information_schema._fs_tables_ext SET ext_table_name = '{table}'
+            WHERE {key} AND ext_table_name = '{other}';
+        UPDATE _fs_global._fs_information_schema._fs_tables_ext SET ext_table_name = '{other}'
+            WHERE {key} AND ext_table_name = '{tmp}'
     """
 
 

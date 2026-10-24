@@ -63,6 +63,45 @@ def alter_table_add_multiple_columns(
     return alter_statements
 
 
+def swap_table(expression: Expr) -> list[Expr]:
+    """Transform ALTER TABLE a SWAP WITH b, which duckdb lacks, into renames through a temporary name.
+
+    a -> tmp, b -> a, tmp -> b. The b -> a rename carries swap_comments so the cursor can swap the
+    tables' recorded comments, which are keyed by name.
+    """
+    if not (
+        isinstance(expression, exp.Alter)
+        and expression.args.get("kind") == "TABLE"
+        and isinstance(expression.this, exp.Table)
+        and len(actions := expression.args.get("actions") or []) == 1
+        and isinstance(actions[0], exp.SwapTable)
+    ):
+        return [expression]
+
+    first = expression.this
+    second = actions[0].this
+    if (second.catalog and second.catalog != first.catalog) or (second.db and second.db != first.db):
+        raise NotImplementedError("ALTER TABLE ... SWAP WITH across databases or schemas")
+
+    # rename to takes an unqualified name, and the new name must be in the same schema as the table
+    tmp = f"_fs_swap_{secrets.token_hex(8)}"
+    qualifiers = {"catalog": first.args.get("catalog"), "db": first.args.get("db")}
+
+    def table(name: str | exp.Identifier) -> exp.Table:
+        return exp.Table(this=exp.to_identifier(name), **{k: v.copy() for k, v in qualifiers.items() if v})
+
+    def rename(source: str | exp.Identifier, target: str | exp.Identifier) -> exp.Alter:
+        return exp.Alter(
+            this=table(source),
+            kind="TABLE",
+            actions=[exp.AlterRename(this=exp.Table(this=exp.to_identifier(target)))],
+        )
+
+    second_to_first = rename(second.this, first.this)
+    second_to_first.set("swap_comments", True)
+    return [rename(first.this, tmp), second_to_first, rename(tmp, second.this)]
+
+
 def _is_alter_table_cluster_by(expression: Expr) -> bool:
     if not isinstance(expression, exp.Alter):
         return False

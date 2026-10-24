@@ -151,3 +151,30 @@ def test_qualified_temporary_table_is_session_isolated(conn: snowflake.connector
         pytest.raises(snowflake.connector.errors.ProgrammingError, match="does not exist"),
     ):
         other.cursor().execute("select * from db1.schema1.tt")
+
+
+def test_alter_table_swap_with(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
+    cur.execute("create table a (x int)")
+    cur.execute("insert into a values (1)")
+    cur.execute("create table b (y varchar)")
+    cur.execute("alter table a swap with b")
+    assert cur.fetchall() == [("Statement executed successfully.",)]
+    cur.execute("select * from a")
+    assert cur.fetchall() == []
+    assert [d.name for d in cur.description] == ["Y"]
+    cur.execute("select x from b")
+    assert cur.fetchall() == [(1,)]
+
+
+def test_alter_table_swap_with_keeps_comments(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
+    cur.execute("create table a (x int) comment = 'from a'")
+    cur.execute("create table b (y int) comment = 'from b'")
+    cur.execute("alter table a swap with b")
+    cur.execute("select table_name, comment from information_schema.tables where table_name in ('A', 'B') order by 1")
+    assert cur.fetchall() == [("A", "from b"), ("B", "from a")]
+
+
+def test_alter_table_swap_with_missing_table(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
+    cur.execute("create table a (x int)")
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="does not exist"):
+        cur.execute("alter table a swap with nope")

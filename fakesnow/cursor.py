@@ -426,6 +426,10 @@ class FakeSnowflakeCursor:
         if len(overwrite_result) > 1:
             return overwrite_result
 
+        swap_result = transforms.swap_table(expression)
+        if len(swap_result) > 1:
+            return swap_result
+
         # Return original expression if no transform applied
         return [expression]
 
@@ -700,6 +704,16 @@ class FakeSnowflakeCursor:
             schema = table.db or self._conn.schema
             assert catalog and schema
             self._duck_conn.execute(info_schema.insert_table_comment_sql(catalog, schema, table.name, comment))
+
+        if transformed.args.get("swap_comments") and isinstance(transformed, exp.Alter):
+            # comments are keyed by table name, so they follow the tables. This is the second table
+            # renamed to the first one's name.
+            table = cast(exp.Table, transformed.this)
+            rename = cast(exp.AlterRename, transformed.args["actions"][0])
+            catalog = table.catalog or self._conn.database
+            schema = table.db or self._conn.schema
+            assert catalog and schema
+            self._duck_conn.execute(info_schema.swap_table_comments_sql(catalog, schema, table.name, rename.this.name))
 
         if (text_lengths := cast(list[tuple[str, int]], transformed.args.get("text_lengths"))) and (
             table := transformed.find(exp.Table)

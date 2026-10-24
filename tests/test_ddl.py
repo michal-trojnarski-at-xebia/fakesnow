@@ -343,6 +343,16 @@ def test_create_table_with_quoted_name_containing_apostrophe(cur: snowflake.conn
     assert cur.fetchall() == [("Table a'b successfully created.",)]
 
 
+def test_alter_table_swap_with_quoted_name_containing_apostrophe(
+    cur: snowflake.connector.cursor.SnowflakeCursor,
+) -> None:
+    cur.execute('create table "a\'b" (x int)')
+    cur.execute("create table c (y int)")
+    cur.execute('alter table "a\'b" swap with c')
+    cur.execute('select * from "a\'b"')
+    assert [d.name for d in cur.description] == ["Y"]
+
+
 def test_alter_table_swap_with_missing_table(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
     cur.execute("create table a (x int)")
     with pytest.raises(snowflake.connector.errors.ProgrammingError, match="does not exist"):

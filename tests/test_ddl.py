@@ -383,6 +383,26 @@ def test_alter_table_swap_with_view_leaves_table_intact(cur: snowflake.connector
     assert cur.fetchall() == [(1,)]
 
 
+def test_alter_table_swap_temporary_with_permanent(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
+    cur.execute("create table b (x int)")
+    cur.execute("create temporary table a (x int)")
+    with pytest.raises(snowflake.connector.errors.ProgrammingError):
+        cur.execute("alter table a swap with b")
+
+
+def test_alter_table_swap_temporary_with_permanent_leaves_tables_intact(
+    cur: snowflake.connector.cursor.SnowflakeCursor,
+) -> None:
+    cur.execute("create table a (x int)")
+    cur.execute("create table b (x int)")
+    cur.execute("create temporary table a (x int)")
+    cur.execute("insert into a values (1)")
+    with pytest.raises(snowflake.connector.errors.ProgrammingError):
+        cur.execute("alter table a swap with b")
+    cur.execute("select x from a")
+    assert cur.fetchall() == [(1,)]
+
+
 def test_alter_table_swap_with_qualified_second_in_session_schema(
     cur: snowflake.connector.cursor.SnowflakeCursor,
 ) -> None:

@@ -114,12 +114,12 @@ def swap_table(
             msg=f"SQL compilation error:\nCannot swap table '{first.name}' with itself.", errno=2003
         )
     catalog, schema = location(first)
-    temporary = False
+    temporary: list[bool] = []
     for operand in (first, second):
         name = fold(operand.this)
         # a temporary object shadows a permanent one of the same name
         kind = temporaries.kind(name, catalog, schema) if catalog and schema else None
-        temporary = temporary or bool(kind)
+        temporary.append(bool(kind))
         if not kind and (row := duck_conn.execute(_KIND_SQL, [catalog, schema, name]).fetchone()):
             kind = row[0]
         if kind and kind != "TABLE":
@@ -128,6 +128,11 @@ def swap_table(
                 msg=f"SQL compilation error:\nObject found is of type '{kind}', not specified type 'TABLE'.",
                 errno=2203,
             )
+    if temporary[0] != temporary[1]:
+        # see https://docs.snowflake.com/en/sql-reference/sql/alter-table#parameters
+        raise snowflake.connector.errors.ProgrammingError(
+            msg="SQL compilation error:\nCannot swap a temporary table with a permanent or transient table.", errno=2203
+        )
 
     # rename to takes an unqualified name, and the new name must be in the same schema as the table
     tmp = f"_fs_swap_{secrets.token_hex(8)}"
@@ -145,7 +150,7 @@ def swap_table(
 
     second_to_first = rename(second.this, first.this)
     # temporary tables have no recorded metadata, and their names would swap the permanent tables' metadata
-    second_to_first.set("swap_metadata", not temporary)
+    second_to_first.set("swap_metadata", not any(temporary))
     probes = [exp.select("1").from_(t.copy()).where(exp.false()) for t in (first, second)]
     return [*probes, rename(first.this, tmp), second_to_first, rename(tmp, second.this)]
 

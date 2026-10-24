@@ -9,6 +9,14 @@ from fakesnow import checks
 from fakesnow.tasks.catalog import Task, tasks_table
 from fakesnow.tasks.statements import ShowTasks
 
+# provisional values, to be checked against live Snowflake
+OWNER_ROLE_TYPE = "ROLE"
+OVERLAP_TRUE = "true"  # allow_overlapping_execution is rendered as text
+OVERLAP_FALSE = "false"
+SCHEDULING_MODE = "NULL"  # SQL for the scheduling_mode value
+EXECUTE_AS_USER = "NULL"  # SQL for the execute_as_user value
+DATABASE_DOES_NOT_EXIST = "SQL compilation error:\nDatabase '{database}' does not exist or not authorized."
+
 _TERSE_COLUMNS = "created_on, name, NULL::VARCHAR AS kind, database_name, schema_name, schedule"
 
 
@@ -37,20 +45,21 @@ def _rows(database: str) -> str:
         t.comment,
         t.warehouse,
         t.schedule,
-        NULL::VARCHAR as scheduling_mode,
+        {SCHEDULING_MODE}::VARCHAR as scheduling_mode,
         t.properties->>'$.TARGET_COMPLETION_INTERVAL' as target_completion_interval,
         {predecessors}::VARCHAR as predecessors,
         t.state,
         t.definition,
         t.condition,
         CASE WHEN {is_child} THEN NULL
-             ELSE CASE WHEN coalesce(t.allow_overlapping_execution, false) THEN 'true' ELSE 'false' END
+             ELSE CASE WHEN coalesce(t.allow_overlapping_execution, false)
+                       THEN '{OVERLAP_TRUE}' ELSE '{OVERLAP_FALSE}' END
         END as allow_overlapping_execution,
         t.error_integration,
         t.success_integration,
         t.last_committed_on,
         t.last_suspended_on,
-        'ROLE' as owner_role_type,
+        '{OWNER_ROLE_TYPE}' as owner_role_type,
         CASE WHEN {is_child} THEN NULL ELSE t.config END as config,
         t.last_suspended_reason,
         json_merge_patch(
@@ -61,7 +70,7 @@ def _rows(database: str) -> str:
                 ELSE '{{}}'::JSON
             END
         )::VARCHAR as task_relations,
-        NULL::VARCHAR as execute_as_user,
+        {EXECUTE_AS_USER}::VARCHAR as execute_as_user,
         CASE WHEN {is_child} THEN NULL ELSE t.overlap_policy END as overlap_policy
     from {table} t"""
 
@@ -101,7 +110,7 @@ def show_tasks_sql(
         ]
     if database and not databases:
         raise snowflake.connector.errors.ProgrammingError(
-            msg=f"SQL compilation error:\nDatabase '{database}' does not exist or not authorized.",
+            msg=DATABASE_DOES_NOT_EXIST.format(database=database),
             errno=2003,
             sqlstate="02000",
         )

@@ -15,14 +15,15 @@ def _select(cur: snowflake.connector.cursor.SnowflakeCursor, columns: str, name:
 
 
 def _show(cur: snowflake.connector.cursor.SnowflakeCursor, columns: str, name: str | None = None) -> list[tuple]:
-    """The columns of SHOW TASKS, for the named task or all tasks."""
+    """The columns of SHOW TASKS, for the named task or all tasks. A quoted name is matched as written, otherwise
+    it is upper-cased."""
     cur.execute("show tasks")
     names = [d.name for d in cur.description]
     wanted = [c.strip() for c in columns.split(",")]
     return [
         tuple(row[names.index(c)] for c in wanted)
         for row in cur.fetchall()
-        if name is None or row[names.index("name")] == name.upper()
+        if name is None or row[names.index("name")] == (name[1:-1] if name.startswith('"') else name.upper())
     ]
 
 
@@ -1057,3 +1058,22 @@ def test_describe_task_columns(cur: snowflake.connector.cursor.SnowflakeCursor):
 def test_describe_missing_task_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
     with pytest.raises(snowflake.connector.errors.ProgrammingError, match=r"Task 'DB1\.SCHEMA1\.NOPE' does not exist"):
         cur.execute("describe task nope")
+
+
+def test_show_tasks_quoted_mixed_case_name(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute('create task "My Task" as select 1')
+    assert _show(cur, "name") == [("My Task",)]
+
+
+def test_describe_task_quoted_mixed_case_name(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute('create task "My Task" as select 1')
+    cur.execute('describe task "My Task"')
+    names = [d.name for d in cur.description]
+    assert [row[names.index("name")] for row in cur.fetchall()] == ["My Task"]
+
+
+def test_show_tasks_in_account_skips_database_without_tasks_table(conn: snowflake.connector.SnowflakeConnection):
+    conn._duck_conn.execute("attach ':memory:' as plain")  # type: ignore[attr-defined]  # noqa: SLF001
+    cur = conn.cursor()
+    cur.execute("create task t1 as select 1")
+    assert _show_names(cur, "show tasks in account") == ["T1"]

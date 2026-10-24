@@ -495,3 +495,8 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
 11. `ALTER TASK ... REMOVE AFTER` of a task that isn't a predecessor: raises or is a no-op (fakesnow: silent no-op).
 12. `ALTER TASK ... SUSPEND` of an already suspended task: whether it overwrites `last_suspended_on` and
     `last_suspended_reason` (fakesnow: overwrites, with `USER_SUSPENDED`).
+13. SHOW TASKS / DESCRIBE TASK values (`fakesnow/tasks/show.py`): `owner_role_type` (`OWNER_ROLE_TYPE`), the text
+    rendering of `allow_overlapping_execution` (`OVERLAP_TRUE`/`OVERLAP_FALSE`, NULL on child tasks), NULL
+    `scheduling_mode` and `execute_as_user`, and the missing-database error text (`DATABASE_DOES_NOT_EXIST`).
+14. `SHOW TASKS ... ROOT ONLY`: whether a finalizer (no predecessors, but not a root) is included (fakesnow: included).
+15. `SHOW TASKS IN SCHEMA <missing>`: no rows or an error (fakesnow: no rows; a missing database raises).

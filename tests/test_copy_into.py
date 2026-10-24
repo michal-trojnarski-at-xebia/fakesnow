@@ -1321,6 +1321,24 @@ def test_load_history_is_per_table(dcur: snowflake.connector.cursor.DictCursor, 
     assert dcur.fetchall()[0]["status"] == "LOADED"
 
 
+def test_load_history_kept_when_temporary_table_created_in_other_schema(
+    dcur: snowflake.connector.cursor.DictCursor, s3_client: S3Client
+) -> None:
+    create_table(dcur)
+    bucket = str(uuid.uuid4())
+    upload_file(s3_client, "1,2", bucket=bucket, key="foo.csv")
+    sql = f"COPY INTO table1 FROM 's3://{bucket}/' FILES=('foo.csv')"
+    dcur.execute(sql)
+
+    dcur.execute("CREATE SCHEMA db1.other")
+    dcur.execute("USE SCHEMA schema1")
+    dcur.execute("CREATE TEMPORARY TABLE db1.other.table1 (a INT, b INT)")
+
+    # schema1.table1 is not the table that was created, so it still skips the loaded file
+    dcur.execute(sql)
+    assert dcur.fetchall()[0]["status"] == "LOAD_SKIPPED"
+
+
 def test_params_csv_default():
     # Snowflake defaults are
     # TYPE='CSV' SKIP_HEADER = 0 FIELD_OPTIONALLY_ENCLOSED_BY = NONE FIELD_DELIMITER = ',' NULL_IF = '\N' COMPRESSION = 'AUTO'

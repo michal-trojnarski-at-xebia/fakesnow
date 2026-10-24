@@ -670,8 +670,9 @@ class FakeSnowflakeCursor:
             elif cmd == "CREATE TABLE" and ident:
                 result_sql = SQL_CREATED_TABLE.substitute(name=ident)
 
-                # a newly created table object has no load history
-                if table := transformed.find(exp.Table):
+                # a newly created table object has no load history. history is keyed by the Snowflake name, which a
+                # temporary table shares with any permanent one, and the temporary table's qualifiers are stripped.
+                if not transformed.args.get("temporary_owner") and (table := transformed.find(exp.Table)):
                     catalog = table.catalog or self._conn.database
                     schema = table.db or self._conn.schema
                     assert catalog and schema

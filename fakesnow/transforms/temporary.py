@@ -56,6 +56,16 @@ def temporary_objects(
             expression.set("catalog", exp.to_identifier(catalog))
             expression.set("db", exp.to_identifier(schema))
 
+    if (
+        isinstance(expression, exp.Column)
+        and expression.args.get("db")
+        and (owner := temporaries.owner(expression.table))
+        and owner == (expression.catalog or current_database, expression.db)
+    ):
+        # A schema-qualified column follows its temporary table to temp.main, or it would no longer match it.
+        expression.set("catalog", exp.to_identifier("temp"))
+        expression.set("db", exp.to_identifier("main"))
+
     return expression
 
 

@@ -104,6 +104,13 @@ def test_qualified_temporary_table_schema_qualified_select(cur: snowflake.connec
     assert cur.fetchall() == [(2,)]
 
 
+def test_qualified_temporary_table_qualified_column(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create temporary table db1.schema1.tt (a int)")
+    cur.execute("insert into db1.schema1.tt values (1)")
+    cur.execute("select db1.schema1.tt.a from db1.schema1.tt")
+    assert cur.fetchall() == [(1,)]
+
+
 def test_qualified_temporary_table_describe(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create temporary table db1.schema1.tt (a int)")
     cur.execute("describe table db1.schema1.tt")

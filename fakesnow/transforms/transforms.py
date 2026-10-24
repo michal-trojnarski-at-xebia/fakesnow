@@ -242,7 +242,7 @@ SELECT
     NULL::VARCHAR AS "comment",
     NULL::VARCHAR AS "policy name",
     NULL::JSON AS "privacy domain",
-FROM _fs_information_schema._fs_columns
+FROM _fs_global._fs_information_schema._fs_columns
 WHERE table_catalog = '${catalog}' AND table_schema = '${schema}' AND table_name = '${table}'
 ORDER BY ordinal_position
 """

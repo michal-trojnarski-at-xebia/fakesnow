@@ -1,3 +1,7 @@
+import pytest
+import snowflake.connector
+import snowflake.connector.cursor
+import snowflake.connector.errors
 import sqlglot
 
 from fakesnow.transforms.ddl import alter_table_add_multiple_columns, alter_table_strip_cluster_by
@@ -64,3 +68,54 @@ def test_alter_table_strip_cluster_by() -> None:
     # Regular ALTER TABLE should not be affected
     regular_alter = sqlglot.parse_one("alter table table1 add column name varchar(20)")
     assert regular_alter.transform(alter_table_strip_cluster_by).sql() != success_sql
+
+
+def test_qualified_temporary_view(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create or replace temporary view db1.schema1.tv as select 1 as a")
+    assert cur.fetchall() == [("View TV successfully created.",)]
+    cur.execute("select a from db1.schema1.tv")
+    assert cur.fetchall() == [(1,)]
+
+
+def test_qualified_temporary_table(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute('create or replace temporary table "DB1"."SCHEMA1"."TT" as select 1 as a')
+    assert cur.fetchall() == [("Table TT successfully created.",)]
+    cur.execute("insert into db1.schema1.tt values (2)")
+    cur.execute("delete from db1.schema1.tt where a = 1")
+    cur.execute("select a from schema1.tt")
+    assert cur.fetchall() == [(2,)]
+
+
+def test_qualified_temporary_table_describe_and_drop(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create temporary table db1.schema1.tt (a int)")
+    cur.execute("describe table db1.schema1.tt")
+    assert [r[0] for r in cur.fetchall()] == ["A"]
+    cur.execute("drop table if exists db1.schema1.tt")
+    assert cur.fetchall() == [("TT successfully dropped.",)]
+
+
+def test_qualified_temporary_table_shadows_permanent(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table db1.schema1.t (a int)")
+    cur.execute("insert into db1.schema1.t values (1)")
+    cur.execute("create temporary table db1.schema1.t (a int)")
+    cur.execute("select count(*) from db1.schema1.t")
+    assert cur.fetchall() == [(0,)]
+    cur.execute("drop table db1.schema1.t")
+    cur.execute("select a from db1.schema1.t")
+    assert cur.fetchall() == [(1,)]
+
+
+def test_qualified_temporary_table_not_visible_from_other_schema(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create schema db1.other")
+    cur.execute("create temporary table db1.schema1.tt (a int)")
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="does not exist"):
+        cur.execute("select * from db1.other.tt")
+
+
+def test_qualified_temporary_table_is_session_isolated(conn: snowflake.connector.SnowflakeConnection):
+    conn.cursor().execute("create temporary table db1.schema1.tt (a int)")
+    with (
+        snowflake.connector.connect(database="db1", schema="schema1") as other,
+        pytest.raises(snowflake.connector.errors.ProgrammingError, match="does not exist"),
+    ):
+        other.cursor().execute("select * from db1.schema1.tt")

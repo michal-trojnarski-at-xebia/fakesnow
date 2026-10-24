@@ -301,6 +301,12 @@ class FakeSnowflakeCursor:
         return (
             expression.transform(lambda e: transforms.identifier(e, params), copy=False)
             .transform(transforms.upper_case_unquoted_identifiers, copy=False)
+            .transform(
+                lambda e: transforms.temporary_objects(
+                    e, self._conn.temporaries, self._conn.database, self._conn.schema
+                ),
+                copy=False,
+            )
             .transform(transforms.alter_session, copy=False)
             .transform(transforms.update_variables, variables=self._conn.variables, copy=False)
             .transform(transforms.current_version, copy=False)
@@ -534,7 +540,8 @@ class FakeSnowflakeCursor:
             msg = cast(str, e.args[0]).split("\n")[0]
             raise snowflake.connector.errors.ProgrammingError(msg=msg, errno=100035, sqlstate="22007") from e
 
-        self._conn.table_stages.record_temporary_table(transformed, self._conn.database, self._conn.schema)
+        if temporary_owner := transformed.args.get("temporary_owner"):
+            self._conn.temporaries.record(transformed, *temporary_owner)
 
         if set_database := transformed.args.get("set_database"):
             self._conn.database = set_database

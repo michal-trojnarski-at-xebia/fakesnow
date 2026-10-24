@@ -1135,8 +1135,11 @@ def set_schema(expression: Expr, current_database: str | None) -> Expr:
         if kind.name.upper() in ["ROLE", "WAREHOUSE"]:
             # duckdb has no roles or warehouses, so the session only records them
             assert expression.this, f"No identifier for USE expression {expression}"
+            ident = expression.this.find(exp.Identifier)
+            assert ident, f"No identifier for USE expression {expression}"
             new = SUCCESS_NOP.copy()
-            new.args[f"set_{kind.name.lower()}"] = expression.this.name.upper()
+            # quoted identifiers are case-sensitive
+            new.args[f"set_{kind.name.lower()}"] = ident.name if ident.quoted else ident.name.upper()
             return new
 
         if kind.name.upper() not in ["SCHEMA", "DATABASE"]:

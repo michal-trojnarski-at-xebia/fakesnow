@@ -15,6 +15,7 @@ import fakesnow.info_schema as info_schema
 import fakesnow.macros as macros
 from fakesnow.cursor import FakeSnowflakeCursor
 from fakesnow.dialect import parse
+from fakesnow.expr import normalise_ident
 from fakesnow.owners import Owners
 from fakesnow.temporary import TemporaryObjects
 from fakesnow.transforms.stage import TableStages
@@ -50,8 +51,8 @@ class FakeSnowflakeConnection:
         )
 
         # roles and warehouses have no duckdb equivalent, so they are only tracked for current_role() etc
-        self.role: str = (kwargs.get("role") or "PUBLIC").upper()
-        self.warehouse: str | None = (w := kwargs.get("warehouse")) and w.upper()
+        self.role: str = normalise_ident(kwargs.get("role") or "PUBLIC")
+        self.warehouse: str | None = (w := kwargs.get("warehouse")) and normalise_ident(w)
 
         self.database_set = False
         self.schema_set = False

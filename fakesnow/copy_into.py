@@ -71,7 +71,11 @@ def copy_into(
 
     schema = table.db or current_schema
     assert schema
-    # the stage and load history use the Snowflake name, the columns and rows are the temporary table's it may name
+    catalog = table.catalog or current_database
+    assert catalog
+    # a temporary table keeps its own load history, apart from a permanent table of the same name
+    temporary_loaded = temporaries.loaded_files(table.name, catalog, schema)
+    # the stage uses the Snowflake name, the columns and rows are the temporary table's it may name
     resolve_table(table, temporaries, current_database, current_schema)
 
     parquet_info = None
@@ -107,8 +111,11 @@ def copy_into(
 
         for i, url in zip(inserts, urls, strict=False):
             # Check if file has been loaded into this table before
-            duck_conn.execute(check_sql, [url, table.name, schema])
-            if duck_conn.fetchone() and not cparams.force:
+            if temporary_loaded is not None:
+                loaded_before = url in temporary_loaded
+            else:
+                loaded_before = duck_conn.execute(check_sql, [url, table.name, schema]).fetchone() is not None
+            if loaded_before and not cparams.force:
                 affected_count = 0
                 status = "LOAD_SKIPPED"
                 error_limit = None
@@ -120,6 +127,8 @@ def copy_into(
                 duck_conn.execute(sql, params)
                 (affected_count,) = duck_conn.fetchall()[0]
                 status = "LOADED"
+                if temporary_loaded is not None:
+                    temporary_loaded.add(url)
                 error_limit = 1
                 error_count = 0
                 first_error_message = None
@@ -145,7 +154,7 @@ def copy_into(
             )
             histories.append(history)
 
-        if insert_histories := [h for h in histories if h.status != "LOAD_SKIPPED"]:
+        if temporary_loaded is None and (insert_histories := [h for h in histories if h.status != "LOAD_SKIPPED"]):
             duck_conn.executemany(
                 "INSERT INTO _fs_information_schema._fs_load_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [tuple(history) for history in insert_histories],

@@ -1410,6 +1410,46 @@ def test_copy_into_qualified_temporary_table_leaves_shadowed_table(
     assert dcur.fetchall() == [{"N": 0}]
 
 
+def test_copy_into_temporary_table_ignores_shadowed_table_history(
+    dcur: snowflake.connector.cursor.DictCursor, s3_client: S3Client
+) -> None:
+    create_table(dcur)
+    bucket = str(uuid.uuid4())
+    upload_file(s3_client, "1,2", bucket=bucket, key="foo.csv")
+    sql = f"COPY INTO db1.schema1.table1 FROM 's3://{bucket}/' FILES=('foo.csv')"
+    dcur.execute(sql)
+    dcur.execute("CREATE TEMPORARY TABLE db1.schema1.table1 (a INT, b INT)")
+    dcur.execute(sql)
+    assert dcur.fetchall()[0]["status"] == "LOADED"
+
+
+def test_copy_into_temporary_table_leaves_shadowed_table_history(
+    dcur: snowflake.connector.cursor.DictCursor, s3_client: S3Client
+) -> None:
+    create_table(dcur)
+    bucket = str(uuid.uuid4())
+    upload_file(s3_client, "1,2", bucket=bucket, key="foo.csv")
+    sql = f"COPY INTO db1.schema1.table1 FROM 's3://{bucket}/' FILES=('foo.csv')"
+    dcur.execute("CREATE TEMPORARY TABLE db1.schema1.table1 (a INT, b INT)")
+    dcur.execute(sql)
+    # drops the temporary table, which shadows the permanent one
+    dcur.execute("DROP TABLE db1.schema1.table1")
+    dcur.execute(sql)
+    assert dcur.fetchall()[0]["status"] == "LOADED"
+
+
+def test_copy_into_temporary_table_skips_file_it_loaded(
+    dcur: snowflake.connector.cursor.DictCursor, s3_client: S3Client
+) -> None:
+    dcur.execute("CREATE TEMPORARY TABLE table1 (a INT, b INT)")
+    bucket = str(uuid.uuid4())
+    upload_file(s3_client, "1,2", bucket=bucket, key="foo.csv")
+    sql = f"COPY INTO table1 FROM 's3://{bucket}/' FILES=('foo.csv')"
+    dcur.execute(sql)
+    dcur.execute(sql)
+    assert dcur.fetchall()[0]["status"] == "LOAD_SKIPPED"
+
+
 def test_params_csv_default():
     # Snowflake defaults are
     # TYPE='CSV' SKIP_HEADER = 0 FIELD_OPTIONALLY_ENCLOSED_BY = NONE FIELD_DELIMITER = ',' NULL_IF = '\N' COMPRESSION = 'AUTO'

@@ -23,6 +23,8 @@ class TemporaryObjects:
         self._duck_conn = duck_conn
         # Temporary object OID -> (catalog, schema) it was created in.
         self._owners: dict[int, tuple[str | None, str | None]] = {}
+        # Temporary table OID -> files COPY has loaded into it, kept apart from any permanent table's history.
+        self._loaded_files: dict[int, set[str]] = {}
 
     def record(self, expression: Expr, catalog: str | None, schema: str | None) -> None:
         """Register a temporary table or view just created by expression in catalog.schema."""
@@ -38,6 +40,7 @@ class TemporaryObjects:
         # Forget dropped objects here rather than tracking DROP, so the registry is bounded by live objects.
         live_oids = set(live.values())
         self._owners = {oid: owner for oid, owner in self._owners.items() if oid in live_oids}
+        self._loaded_files = {oid: files for oid, files in self._loaded_files.items() if oid in live_oids}
         # CREATE TEMP TABLE IF NOT EXISTS succeeds without creating anything when the name is already taken, so the
         # OID may already be registered. Keep the schema it was created in.
         self._owners.setdefault(live[table.name], (catalog, schema))
@@ -52,11 +55,25 @@ class TemporaryObjects:
         found = self._find(name)
         return found[1] if found and found[0] == (catalog, schema) else None
 
+    def loaded_files(self, name: str, catalog: str, schema: str) -> set[str] | None:
+        """The files COPY has loaded into the live temporary table called name created in catalog.schema, or None.
+
+        The set is the table's load history: COPY adds to it, and it goes when the table is dropped.
+        """
+        found = self._find_oid(name)
+        if not found or found[1] != (catalog, schema):
+            return None
+        return self._loaded_files.setdefault(found[0], set())
+
     def _find(self, name: str) -> tuple[tuple[str | None, str | None], str] | None:
+        found = self._find_oid(name)
+        return (found[1], found[2]) if found else None
+
+    def _find_oid(self, name: str) -> tuple[int, tuple[str | None, str | None], str] | None:
         if not self._owners:
             return None
         sql = f"SELECT oid, kind FROM ({_LIVE_SQL}) AS live(name, oid, kind) WHERE name = ?"
         live = self._duck_conn.execute(sql, [name]).fetchone()
         if not live or (owner := self._owners.get(live[0])) is None:
             return None
-        return owner, live[1]
+        return live[0], owner, live[1]

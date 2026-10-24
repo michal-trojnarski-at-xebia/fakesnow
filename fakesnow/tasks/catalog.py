@@ -31,6 +31,9 @@ INVALID_FINALIZER = "SQL compilation error:\nInvalid finalizer task {fqname}: {r
 FINALIZER_HAS_PREDECESSORS = "a finalizer cannot have predecessors"
 FINALIZER_HAS_CHILDREN = "a finalizer cannot have child tasks"
 FINALIZER_EXISTS = "root task {root} already has a finalizer"
+FINALIZER_NOT_ROOT = "{root} is not a root task"
+FINALIZER_SELF = "a task cannot finalize itself"
+MIXED_GRAPHS = "SQL compilation error:\nTask {fqname} cannot have predecessors in different task graphs."
 CYCLE = "SQL compilation error:\nTask graph cycle detected involving task {fqname}."
 LIMIT_EXCEEDED = "SQL compilation error:\nTask {fqname} exceeds the maximum of {limit} {what}."
 
@@ -224,9 +227,9 @@ class TaskCatalog:
         return ordered
 
     def check_root_suspended(self, task: Task) -> None:
-        """Raise if the task is in a graph, other than a standalone task, whose root is started."""
+        """Raise if the root of the task's graph, which may be the task itself, is started."""
         root = self.root_of(task)
-        if root.state == STARTED and (root.fqname != task.fqname or len(self.graph(root)) > 1):
+        if root.state == STARTED:
             raise _error(STARTED_ROOT.format(root=root.fqname), 91089, "02000")
 
     def create(self, stmt: CreateTask) -> str:
@@ -263,24 +266,35 @@ class TaskCatalog:
 
     def _check_graph(self, task: Task, after: list[tuple[str, str, str]]) -> None:
         """Check the rules for a task about to be saved, in the order Snowflake reports them."""
-        self.check_root_suspended(task)
+        preds: list[Task] = []
         for pred_db, pred_schema, pred_name in after:
             pred = self.get(pred_db, pred_schema, pred_name)
             if pred is None:
                 raise _error(DOES_NOT_EXIST.format(fqname=f"{pred_db}.{pred_schema}.{pred_name}"), 2003, "02000")
             if (pred.database, pred.schema_name) != (task.database, task.schema_name):
                 raise _error(OTHER_SCHEMA_PREDECESSOR.format(fqname=task.fqname, pred=pred.fqname), 2003, "02000")
+            if pred.finalize:
+                raise _error(INVALID_FINALIZER.format(fqname=pred.fqname, reason=FINALIZER_HAS_CHILDREN), 2003, "02000")
+            preds.append(pred)
+        if task.finalize == task.name:
+            raise _error(INVALID_FINALIZER.format(fqname=task.fqname, reason=FINALIZER_SELF), 2003, "02000")
         finalized = self.get(task.database, task.schema_name, task.finalize) if task.finalize else None
         if task.finalize and finalized is None:
             raise _error(
                 DOES_NOT_EXIST.format(fqname=f"{task.database}.{task.schema_name}.{task.finalize}"), 2003, "02000"
             )
+        for member in [*preds, finalized] if finalized else preds or [task]:
+            self.check_root_suspended(member)
+        if len({self.root_of(pred).fqname for pred in preds}) > 1:
+            raise _error(MIXED_GRAPHS.format(fqname=task.fqname), 2003, "02000")
         if (task.predecessors or task.finalize) and task.schedule:
             raise _error(SCHEDULED_CHILD.format(fqname=task.fqname), 2003, "02000")
         if finalized:
             reason = None
             existing_finalizer = self.finalizer_of(finalized)
-            if task.predecessors:
+            if finalized.predecessors or finalized.finalize:
+                reason = FINALIZER_NOT_ROOT.format(root=finalized.fqname)
+            elif task.predecessors:
                 reason = FINALIZER_HAS_PREDECESSORS
             elif self.children(task):
                 reason = FINALIZER_HAS_CHILDREN

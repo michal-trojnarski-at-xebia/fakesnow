@@ -697,7 +697,11 @@ class FakeSnowflakeCursor:
             secret_name = match[1].upper() if match else "UNKNOWN"
             result_sql = SQL_CREATED_SECRET.substitute(name=secret_name)
 
-        if table_comment := cast(tuple[exp.Table, str], transformed.args.get("table_comment")):
+        # Temporary objects live in DuckDB's temp catalog, which the information schema doesn't report, so their
+        # comment and text lengths aren't recorded. Under their Snowflake name they'd replace a permanent table's.
+        temporary = bool(transformed.args.get("temporary_owner"))
+
+        if not temporary and (table_comment := cast(tuple[exp.Table, str], transformed.args.get("table_comment"))):
             # record table comment
             table, comment = table_comment
             catalog = table.catalog or self._conn.database
@@ -715,8 +719,10 @@ class FakeSnowflakeCursor:
             assert catalog and schema
             self._duck_conn.execute(info_schema.swap_table_comments_sql(catalog, schema, table.name, rename.this.name))
 
-        if (text_lengths := cast(list[tuple[str, int]], transformed.args.get("text_lengths"))) and (
-            table := transformed.find(exp.Table)
+        if (
+            not temporary
+            and (text_lengths := cast(list[tuple[str, int]], transformed.args.get("text_lengths")))
+            and (table := transformed.find(exp.Table))
         ):
             # record text lengths
             catalog = table.catalog or self._conn.database

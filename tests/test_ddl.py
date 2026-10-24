@@ -193,6 +193,28 @@ def test_create_or_replace_temporary_table_clone_beside_permanent_of_same_name(
     assert cur.fetchall() == [("Table Z successfully created.",)]
 
 
+def test_temporary_table_text_lengths_leave_permanent_table_in_current_schema(
+    cur: snowflake.connector.cursor.SnowflakeCursor,
+):
+    cur.execute("create schema db1.other")
+    cur.execute("use schema schema1")
+    cur.execute("create table db1.schema1.t (c varchar(5))")
+    cur.execute("create temporary table db1.other.t (c varchar(20))")
+    cur.execute("describe table db1.schema1.t")
+    assert [(r[0], r[1]) for r in cur.fetchall()] == [("C", "VARCHAR(5)")]
+
+
+def test_temporary_table_comment_leaves_permanent_table_in_current_schema(
+    cur: snowflake.connector.cursor.SnowflakeCursor,
+):
+    cur.execute("create schema db1.other")
+    cur.execute("use schema schema1")
+    cur.execute("create table db1.schema1.t (id int) comment = 'permanent'")
+    cur.execute("create temporary table db1.other.t (id int) comment = 'temporary'")
+    cur.execute("select comment from db1.information_schema.tables where table_schema = 'SCHEMA1' and table_name = 'T'")
+    assert cur.fetchall() == [("permanent",)]
+
+
 def test_alter_table_swap_with(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
     cur.execute("create table a (x int)")
     cur.execute("insert into a values (1)")

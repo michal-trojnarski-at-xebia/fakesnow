@@ -796,76 +796,75 @@ def test_show_grants_resolves_unqualified_name(dcur: snowflake.connector.cursor.
 
 def test_show_grants_reports_creating_role(dcur: snowflake.connector.cursor.DictCursor):
     # the role that creates an object owns it
-    dcur.execute("use role transformer")
-    dcur.execute("create table t1 (id int)")
-    dcur.execute("show grants on table db1.schema1.t1")
-    assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.T1", role="TRANSFORMER")]
-
-
-def test_show_grants_reports_owner_after_role_change(dcur: snowflake.connector.cursor.DictCursor):
-    dcur.execute("use role transformer")
-    dcur.execute("create table t1 (id int)")
     dcur.execute("use role sysadmin")
-    dcur.execute("show grants on table db1.schema1.t1")
-    assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.T1", role="TRANSFORMER")]
-
-
-def test_show_grants_owner_follows_rename(dcur: snowflake.connector.cursor.DictCursor):
-    dcur.execute("use role transformer")
     dcur.execute("create table t1 (id int)")
-    dcur.execute("use role sysadmin")
-    dcur.execute("alter table t1 rename to t2")
-    dcur.execute("show grants on table db1.schema1.t2")
-    assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.T2", role="TRANSFORMER")]
-
-
-def test_show_grants_create_or_replace_takes_new_owner(dcur: snowflake.connector.cursor.DictCursor):
-    dcur.execute("use role transformer")
-    dcur.execute("create table t1 (id int)")
-    dcur.execute("use role sysadmin")
-    dcur.execute("create or replace table t1 (id int)")
-    dcur.execute("use role transformer")
     dcur.execute("show grants on table db1.schema1.t1")
     assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.T1", role="SYSADMIN")]
 
 
-def test_show_grants_create_if_not_exists_keeps_owner(dcur: snowflake.connector.cursor.DictCursor):
-    dcur.execute("use role transformer")
-    dcur.execute("create table t1 (id int)")
+def test_show_grants_reports_owner_after_role_change(dcur: snowflake.connector.cursor.DictCursor):
     dcur.execute("use role sysadmin")
+    dcur.execute("create table t1 (id int)")
+    dcur.execute("use role accountadmin")
+    dcur.execute("show grants on table db1.schema1.t1")
+    assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.T1", role="SYSADMIN")]
+
+
+def test_show_grants_owner_follows_rename(dcur: snowflake.connector.cursor.DictCursor):
+    dcur.execute("use role sysadmin")
+    dcur.execute("create table t1 (id int)")
+    dcur.execute("use role accountadmin")
+    dcur.execute("alter table t1 rename to t2")
+    dcur.execute("show grants on table db1.schema1.t2")
+    assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.T2", role="SYSADMIN")]
+
+
+def test_show_grants_create_or_replace_takes_new_owner(dcur: snowflake.connector.cursor.DictCursor):
+    dcur.execute("use role sysadmin")
+    dcur.execute("create table t1 (id int)")
+    dcur.execute("use role accountadmin")
+    dcur.execute("create or replace table t1 (id int)")
+    dcur.execute("show grants on table db1.schema1.t1")
+    assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.T1", role="ACCOUNTADMIN")]
+
+
+def test_show_grants_create_if_not_exists_keeps_owner(dcur: snowflake.connector.cursor.DictCursor):
+    dcur.execute("use role sysadmin")
+    dcur.execute("create table t1 (id int)")
+    dcur.execute("use role accountadmin")
     dcur.execute("create table if not exists t1 (id int)")
     dcur.execute("show grants on table db1.schema1.t1")
-    assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.T1", role="TRANSFORMER")]
+    assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.T1", role="SYSADMIN")]
 
 
 def test_show_grants_on_view_reports_owner_after_role_change(dcur: snowflake.connector.cursor.DictCursor):
-    dcur.execute("use role transformer")
-    dcur.execute("create view v1 as select 1 as id")
     dcur.execute("use role sysadmin")
+    dcur.execute("create view v1 as select 1 as id")
+    dcur.execute("use role accountadmin")
     dcur.execute("show grants on db1.schema1.v1")
-    assert dcur.fetchall() == [_ownership("VIEW", "DB1.SCHEMA1.V1", role="TRANSFORMER")]
+    assert dcur.fetchall() == [_ownership("VIEW", "DB1.SCHEMA1.V1", role="SYSADMIN")]
 
 
 def test_show_grants_on_schema_reports_owner_after_role_change(dcur: snowflake.connector.cursor.DictCursor):
-    dcur.execute("use role transformer")
-    dcur.execute("create schema db1.schema2")
     dcur.execute("use role sysadmin")
+    dcur.execute("create schema db1.schema2")
+    dcur.execute("use role accountadmin")
     dcur.execute("show grants on schema db1.schema2")
-    assert dcur.fetchall() == [_ownership("SCHEMA", "DB1.SCHEMA2", role="TRANSFORMER")]
+    assert dcur.fetchall() == [_ownership("SCHEMA", "DB1.SCHEMA2", role="SYSADMIN")]
 
 
 def test_show_grants_on_database_reports_owner_after_role_change(dcur: snowflake.connector.cursor.DictCursor):
-    dcur.execute("use role transformer")
-    dcur.execute("create database db2")
     dcur.execute("use role sysadmin")
+    dcur.execute("create database db2")
+    dcur.execute("use role accountadmin")
     dcur.execute("show grants on database db2")
-    assert dcur.fetchall() == [_ownership("DATABASE", "DB2", role="TRANSFORMER")]
+    assert dcur.fetchall() == [_ownership("DATABASE", "DB2", role="SYSADMIN")]
 
 
 def test_show_grants_on_connect_time_database_reports_connecting_role(
     dcur: snowflake.connector.cursor.DictCursor,
 ):
-    dcur.execute("use role sysadmin")
+    dcur.execute("use role accountadmin")
     dcur.execute("show grants on database db1")
     assert dcur.fetchall() == [_ownership("DATABASE", "DB1")]
 
@@ -873,11 +872,11 @@ def test_show_grants_on_connect_time_database_reports_connecting_role(
 def test_show_grants_on_temporary_table_reports_owner_after_role_change(
     dcur: snowflake.connector.cursor.DictCursor,
 ):
-    dcur.execute("use role transformer")
-    dcur.execute("create temporary table tt (a int)")
     dcur.execute("use role sysadmin")
+    dcur.execute("create temporary table tt (a int)")
+    dcur.execute("use role accountadmin")
     dcur.execute("show grants on table db1.schema1.tt")
-    assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.TT", role="TRANSFORMER")]
+    assert dcur.fetchall() == [_ownership("TABLE", "DB1.SCHEMA1.TT", role="SYSADMIN")]
 
 
 def test_show_grants_on_missing_table(dcur: snowflake.connector.cursor.DictCursor):

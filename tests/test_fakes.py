@@ -776,8 +776,8 @@ def test_insert_overwrite(dcur: snowflake.connector.cursor.DictCursor):
 
 
 def test_use_role_changes_current_role(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("use role analyst")
-    assert cur.execute("select current_role()").fetchall() == [("ANALYST",)]
+    cur.execute("use role sysadmin")
+    assert cur.execute("select current_role()").fetchall() == [("SYSADMIN",)]
 
 
 def test_use_warehouse_changes_current_warehouse(cur: snowflake.connector.cursor.SnowflakeCursor):

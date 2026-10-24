@@ -702,3 +702,33 @@ def test_merge_no_rows_affected_returns_integer_counts(dcur: snowflake.connector
     dcur.execute(merge)
     assert dcur.fetchall() == [{"number of rows inserted": 0, "number of rows updated": 0}]
     assert dcur.rowcount == 0
+
+
+def test_merge_insert_values_unqualified(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table t1 (id int, v varchar)")
+    cur.execute("insert into t1 values (1, 'a')")
+    cur.execute("create table s2 (id int, v varchar)")
+    cur.execute("insert into s2 values (1, 'z'), (2, 'b')")
+    cur.execute(
+        "merge into t1 using s2 on t1.id = s2.id "
+        "when matched then update set v = s2.v "
+        "when not matched then insert (id, v) values (id, v)"
+    )
+    assert cur.fetchall() == [(1, 1)]
+    cur.execute("select id, v from t1 order by id")
+    assert cur.fetchall() == [(1, "z"), (2, "b")]
+
+
+def test_merge_insert_values_unqualified_quoted_with_aliases(cur: snowflake.connector.cursor.SnowflakeCursor):
+    # the shape dbt-snowflake's merge strategy sends
+    cur.execute('create table t1 ("ID" int, "V" varchar)')
+    cur.execute("create table s2 (id int, v varchar)")
+    cur.execute("insert into s2 values (2, 'b')")
+    cur.execute(
+        "merge into t1 as DBT_INTERNAL_DEST using s2 as DBT_INTERNAL_SOURCE "
+        "on ((DBT_INTERNAL_SOURCE.id = DBT_INTERNAL_DEST.id)) "
+        'when matched then update set "ID" = DBT_INTERNAL_SOURCE."ID", "V" = DBT_INTERNAL_SOURCE."V" '
+        'when not matched then insert ("ID", "V") values ("ID", "V")'
+    )
+    cur.execute("select id, v from t1")
+    assert cur.fetchall() == [(2, "b")]

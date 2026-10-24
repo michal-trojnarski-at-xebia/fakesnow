@@ -269,7 +269,7 @@ class TaskCatalog:
             if not stmt.clone_of
             else [(database, schema, p) for p in task.predecessors]
         )
-        self._store(task, existing, after)
+        self._store(task, existing, after, replacing=stmt.replace)
         return status_sql(CREATED, name)
 
     def alter(self, stmt: AlterTask) -> str:
@@ -327,10 +327,16 @@ class TaskCatalog:
         for member in self.graph(task):
             self.save(_resumed(member))
 
-    def _store(self, task: Task, existing: Task | None, after: list[tuple[str, str, str]]) -> None:
+    def is_standalone(self, task: Task) -> bool:
+        """Whether the task has no predecessors, children or finalizer."""
+        return not (task.predecessors or task.finalize or self.children(task) or self.finalizer_of(task))
+
+    def _store(
+        self, task: Task, existing: Task | None, after: list[tuple[str, str, str]], replacing: bool = False
+    ) -> None:
         """Check the graph rules and save a new or changed task. A task already in a started graph can't change,
-        nor can one join a started graph."""
-        if existing:
+        nor can one join a started graph, except that a started standalone task can be replaced."""
+        if existing and not (replacing and self.is_standalone(existing)):
             self.check_root_suspended(existing)
         self._check_graph(task, after)
         self.save(task)
@@ -410,7 +416,8 @@ class TaskCatalog:
             if stmt.if_exists:
                 return status_sql(DROP_MISSING, name)
             raise _error(DOES_NOT_EXIST.format(fqname=f"{database}.{schema}.{name}"), 2003, "02000")
-        self.check_root_suspended(task)
+        if not self.is_standalone(task):
+            self.check_root_suspended(task)
         # dependents of the dropped task become standalone
         for child in self.children(task):
             child.predecessors.remove(name)

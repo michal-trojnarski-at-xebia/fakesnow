@@ -386,12 +386,48 @@ def test_drop_task_in_started_graph_raises(cur: snowflake.connector.cursor.Snowf
         cur.execute("drop task child")
 
 
-@pytest.mark.parametrize("create", ["create or replace task t1 as select 2", "create or alter task t1 as select 2"])
-def test_create_over_started_standalone_task_raises(cur: snowflake.connector.cursor.SnowflakeCursor, create: str):
+def test_drop_started_standalone_task_succeeds(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 schedule = '1 minute' as select 1")
+    _start(cur, "t1")
+    cur.execute("drop task t1")
+    assert _show(cur, "name") == []
+
+
+def test_create_or_replace_started_standalone_task_succeeds(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 schedule = '1 minute' as select 1")
+    _start(cur, "t1")
+    cur.execute("create or replace task t1 schedule = '1 minute' as select 2")
+    assert _show(cur, "definition") == [("select 2",)]
+
+
+def test_create_or_replace_started_standalone_task_is_suspended(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 schedule = '1 minute' as select 1")
+    _start(cur, "t1")
+    cur.execute("create or replace task t1 schedule = '1 minute' as select 2")
+    assert _show(cur, "state") == [("suspended",)]
+
+
+def test_create_or_alter_started_standalone_task_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 schedule = '1 minute' as select 1")
     _start(cur, "t1")
     with pytest.raises(snowflake.connector.errors.ProgrammingError, match="root task is not suspended"):
-        cur.execute(create)
+        cur.execute("create or alter task t1 schedule = '1 minute' as select 2")
+
+
+def test_create_or_replace_started_root_with_dependents_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root schedule = '1 minute' as select 1")
+    cur.execute("create task child after root as select 1")
+    _start(cur, "root")
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="root task is not suspended"):
+        cur.execute("create or replace task root schedule = '1 minute' as select 2")
+
+
+def test_drop_started_root_with_dependents_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root schedule = '1 minute' as select 1")
+    cur.execute("create task child after root as select 1")
+    _start(cur, "root")
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="root task is not suspended"):
+        cur.execute("drop task root")
 
 
 def test_create_child_after_finalizer_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -470,16 +506,6 @@ def test_create_or_replace_task_over_started_child_with_new_predecessor_raises(
     _start(cur, "root")
     with pytest.raises(snowflake.connector.errors.ProgrammingError, match=r"graph with root task DB1\.SCHEMA1\.ROOT"):
         cur.execute("create or replace task child after other as select 1")
-
-
-def test_create_or_replace_task_over_started_standalone_with_new_finalize_raises(
-    cur: snowflake.connector.cursor.SnowflakeCursor,
-):
-    cur.execute("create task root as select 1")
-    cur.execute("create task t1 schedule = '1 minute' as select 1")
-    _start(cur, "t1")
-    with pytest.raises(snowflake.connector.errors.ProgrammingError, match=r"graph with root task DB1\.SCHEMA1\.T1"):
-        cur.execute("create or replace task t1 finalize = root as select 1")
 
 
 def test_create_or_alter_task_over_started_standalone_with_new_predecessor_raises(

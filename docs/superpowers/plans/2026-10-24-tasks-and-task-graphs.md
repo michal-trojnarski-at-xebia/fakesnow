@@ -481,6 +481,8 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
    task (currently the CREATED status), DROP TASK IF EXISTS on a missing task (`DROP_MISSING`), EXECUTE TASK.
 2. Errors: missing task, unknown property, duplicate CREATE (`ALREADY_EXISTS`), missing schema or database on CREATE, started root, missing/other-schema predecessor, schedule on a child,
    finalizer rules (incl. non-root and self), predecessors in different graphs, cycle, limits, EXECUTE TASK on a child.
+   DROP / CREATE OR REPLACE of a started standalone task: allowed (the replacement is suspended); of a started root
+   with dependents: rejected. CREATE OR ALTER of a started standalone task: rejected.
 3. SHOW TASKS / DESCRIBE TASK columns and values (spec check 1).
 4. Current database/schema inside a task run; `SYSTEM$` task functions outside a task (spec check 4; fakesnow: every
    one returns NULL, including `SYSTEM$SET_RETURN_VALUE`).

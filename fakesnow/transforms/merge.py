@@ -124,7 +124,10 @@ def _create_merge_candidates(merge_expr: exp.Merge) -> Expr:
     WHERE MERGE_OP IS NOT NULL
     """
 
-    return sqlglot.parse_one(sql)
+    create = sqlglot.parse_one(sql)
+    # fakesnow's scratch table, not a Snowflake temporary object, so it isn't placed in or tracked by a schema
+    create.args["internal_temporary"] = True
+    return create
 
 
 def _mutations(merge_expr: exp.Merge) -> list[Expr]:

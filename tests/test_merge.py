@@ -753,3 +753,17 @@ def test_merge_aliased_target_update(cur: snowflake.connector.cursor.SnowflakeCu
     cur.execute("merge into t1 as d using s2 on d.id = s2.id when matched then update set v = s2.v")
     cur.execute("select id, v from t1")
     assert cur.fetchall() == [(1, "z")]
+
+
+def test_merge_in_another_schema_after_merge(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table t1 (id int)")
+    cur.execute(
+        "merge into t1 using (select 1 as id) s on t1.id = s.id when not matched then insert (id) values (s.id)"
+    )
+    cur.execute("create schema db1.other")
+    cur.execute("use schema other")
+    cur.execute("create table t2 (id int)")
+    cur.execute(
+        "merge into t2 using (select 2 as id) s on t2.id = s.id when not matched then insert (id) values (s.id)"
+    )
+    assert cur.fetchall() == [(1,)]

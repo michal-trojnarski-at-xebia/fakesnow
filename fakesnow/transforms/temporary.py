@@ -16,8 +16,12 @@ def temporary_objects(
     DuckDB only creates temporary objects in the temp catalog, so CREATE TEMPORARY TABLE|VIEW loses its qualifiers.
     The schema it was created in is kept in temporary_owner for TemporaryObjects.record. A qualified reference to a
     temporary object resolves to it only from that schema, as in Snowflake, and any reference from another schema
-    is qualified so it does not resolve to the temporary object.
+    is qualified so it does not resolve to the temporary object. fakesnow's own scratch tables, marked
+    internal_temporary, are left as they are.
     """
+    if expression.args.get("internal_temporary"):
+        return expression
+
     if (
         isinstance(expression, exp.Create)
         and expression.args.get("kind") in ("TABLE", "VIEW")

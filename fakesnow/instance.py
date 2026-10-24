@@ -8,6 +8,7 @@ import duckdb
 
 import fakesnow.fakes as fakes
 from fakesnow import info_schema
+from fakesnow.owners import Owners
 from fakesnow.transforms import show
 
 GLOBAL_DATABASE_NAME = "_fs_global"
@@ -27,6 +28,7 @@ class FakeSnow:
         self.nop_regexes = nop_regexes
 
         self.results_cache: dict[str, tuple] = {}
+        self.owners = Owners()
         # connecting may create the database and schema, which concurrent connections would race on
         self._connect_lock = threading.Lock()
         # SQLGlot's DuckDB transpilation still emits legacy arrow lambdas; keep the
@@ -64,5 +66,6 @@ class FakeSnow:
                 create_schema=self.create_schema_on_connect,
                 db_path=self.db_path,
                 nop_regexes=nop_regexes or self.nop_regexes,
+                owners=self.owners,
                 **kwargs,
             )

@@ -8,6 +8,7 @@ from duckdb import DuckDBPyConnection
 from sqlglot import Expr, TokenType, exp
 
 from fakesnow.expr import normalise_ident
+from fakesnow.owners import Owners
 from fakesnow.temporary import TemporaryObjects
 
 
@@ -335,11 +336,13 @@ def show_grants(
     role: str,
     duck_conn: DuckDBPyConnection,
     temporaries: TemporaryObjects,
+    owners: Owners,
 ) -> Expr:
     """Transform SHOW GRANTS ON [<kind>] <name>.
 
-    Grants aren't tracked, so only the implicit OWNERSHIP grant held by the session role is reported. Without a kind,
-    as dbt renders it, the name is resolved as a table and then a view.
+    Grants aren't tracked, so only the implicit OWNERSHIP grant held by the role that created the object is reported.
+    Objects whose creation wasn't seen, eg: reopened from db_path, are reported as owned by the session role. Without
+    a kind, as dbt renders it, the name is resolved as a table and then a view.
 
     See https://docs.snowflake.com/en/sql-reference/sql/show-grants
     """
@@ -381,6 +384,7 @@ def show_grants(
         raise NotImplementedError(expression.sql(dialect="snowflake"))
     names = [q for q in leading if q] + parts[::-1]
 
+    temporary = None
     if kind == "DATABASE":
         exists_sql = "SELECT 1 FROM _fs_global._fs_information_schema._fs_show_databases WHERE name = ?"
         exists = duck_conn.execute(exists_sql, names).fetchone() is not None
@@ -410,6 +414,10 @@ def show_grants(
             sqlstate="02000",
         )
 
+    # a temporary object shadows a permanent one of the same name, and lives in the session's temp catalog
+    owner_kind, owner_names = (temporary, ["temp", "main", names[2]]) if temporary else (kind, names)
+    owner = owners.owner(duck_conn, owner_kind, owner_names) or role
+
     # the catalog doesn't record creation time, so report the current time
     query = f"""
         SELECT
@@ -418,9 +426,9 @@ def show_grants(
             '{kind}' AS granted_on,
             {exp.Literal.string(".".join(names)).sql(dialect="duckdb")} AS name,
             'ROLE' AS granted_to,
-            {exp.Literal.string(role).sql(dialect="duckdb")} AS grantee_name,
+            {exp.Literal.string(owner).sql(dialect="duckdb")} AS grantee_name,
             'true' AS grant_option,
-            {exp.Literal.string(role).sql(dialect="duckdb")} AS granted_by
+            {exp.Literal.string(owner).sql(dialect="duckdb")} AS granted_by
     """
     return sqlglot.parse_one(query, read="duckdb")
 

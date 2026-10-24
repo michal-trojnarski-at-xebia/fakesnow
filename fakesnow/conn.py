@@ -15,6 +15,7 @@ import fakesnow.info_schema as info_schema
 import fakesnow.macros as macros
 from fakesnow.cursor import FakeSnowflakeCursor
 from fakesnow.dialect import parse
+from fakesnow.owners import Owners
 from fakesnow.temporary import TemporaryObjects
 from fakesnow.transforms.stage import TableStages
 from fakesnow.variables import Variables
@@ -31,6 +32,7 @@ class FakeSnowflakeConnection:
         create_schema: bool = True,
         db_path: str | os.PathLike | None = None,
         nop_regexes: list[str] | None = None,
+        owners: Owners | None = None,
         *args: Any,
         **kwargs: Any,
     ):
@@ -58,6 +60,7 @@ class FakeSnowflakeConnection:
         self._paramstyle = kwargs.get("paramstyle", snowflake.connector.paramstyle)
         self.variables = Variables()
         self.temporaries = TemporaryObjects(duck_conn)
+        self.owners = owners or Owners()
         self.table_stages = TableStages(duck_conn, self.temporaries)
         self.results_cache = results_cache
         self._autocommit = kwargs.get("autocommit", True)
@@ -86,6 +89,7 @@ class FakeSnowflakeConnection:
             duck_conn.execute(f"ATTACH DATABASE '{db_file}' AS {self.database}")
             duck_conn.execute(info_schema.per_db_creation_sql(self.database))
             duck_conn.execute(macros.creation_sql(self.database))
+            self.owners.record(duck_conn, "DATABASE", [self.database], self.role)
 
         # create schema if needed
         if (
@@ -98,6 +102,7 @@ class FakeSnowflakeConnection:
             ).fetchone()
         ):
             duck_conn.execute(f"CREATE SCHEMA {self.database}.{self._schema}")
+            self.owners.record(duck_conn, "SCHEMA", [self.database, self._schema], self.role)
 
         # set database and schema if both exist
         if (

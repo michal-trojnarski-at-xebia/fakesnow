@@ -364,7 +364,13 @@ class FakeSnowflakeCursor:
             .transform(transforms.show_functions, copy=False)
             .transform(
                 lambda e: transforms.show_grants(
-                    e, self._conn.database, self._conn.schema, self._conn.role, self._duck_conn, self._conn.temporaries
+                    e,
+                    self._conn.database,
+                    self._conn.schema,
+                    self._conn.role,
+                    self._duck_conn,
+                    self._conn.temporaries,
+                    self._conn.owners,
                 ),
                 copy=False,
             )
@@ -558,6 +564,8 @@ class FakeSnowflakeCursor:
 
         if temporary_owner := transformed.args.get("temporary_owner"):
             self._conn.temporaries.record(transformed, *temporary_owner)
+
+        self._record_owner(transformed)
 
         if set_database := transformed.args.get("set_database"):
             self._conn.database = set_database
@@ -754,6 +762,28 @@ class FakeSnowflakeCursor:
             self._last_params,
             self._last_transformed,
         )
+
+    def _record_owner(self, transformed: Expr) -> None:
+        """Record the session role as the owner of a database, schema, table or view just created."""
+        if create_db_name := transformed.args.get("create_db_name"):
+            kind, names = "DATABASE", [create_db_name]
+        elif (
+            isinstance(transformed, exp.Create)
+            and (kind := str(transformed.args.get("kind")).upper()) in ("SCHEMA", "TABLE", "VIEW")
+            and transformed.this
+            and (table := transformed.this.find(exp.Table))
+        ):
+            if kind == "SCHEMA":
+                names = [table.catalog or self._conn.database, table.db]
+            elif transformed.args.get("temporary_owner"):
+                # temporary objects live in the session's temp catalog
+                names = ["temp", "main", table.name]
+            else:
+                names = [table.catalog or self._conn.database, table.db or self._conn.schema, table.name]
+        else:
+            return
+        if all(names):
+            self._conn.owners.record(self._duck_conn, kind, cast(list[str], names), self._conn.role)
 
     def executemany(
         self,

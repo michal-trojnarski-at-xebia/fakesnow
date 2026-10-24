@@ -172,6 +172,11 @@ def test_drop_task_if_exists_missing(cur: snowflake.connector.cursor.SnowflakeCu
     assert cur.rowcount == 1
 
 
+def test_drop_task_if_exists_missing_status(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("drop task if exists nope")
+    assert cur.fetchall() == [("Drop statement executed successfully (NOPE already dropped).",)]
+
+
 def test_create_task_quoted_name(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute('create task "My Task" as select 1')
     assert cur.fetchall() == [("Task My Task successfully created.",)]
@@ -590,6 +595,12 @@ def test_alter_task_set_session_parameter(cur: snowflake.connector.cursor.Snowfl
     assert indent(_select(cur, "session_parameters::varchar")) == [('{\n  "TIMEZONE": "UTC"\n}',)]
 
 
+def test_alter_task_unset_unknown_property_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select 1")
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="invalid property 'NOPE' for 'TASK'"):
+        cur.execute("alter task t1 unset nope")
+
+
 def test_alter_task_unset_comment(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 comment = 'c' as select 1")
     cur.execute("alter task t1 unset comment")
@@ -801,6 +812,13 @@ def test_task_dependents_enable_resumes_graph(cur: snowflake.connector.cursor.Sn
     cur.execute("create task grandchild after child as select 1")
     cur.execute("select system$task_dependents_enable('root')")
     assert sorted(_show(cur, "name, state")) == [("CHILD", "started"), ("GRANDCHILD", "started"), ("ROOT", "started")]
+
+
+def test_task_dependents_enable_resumes_finalizer(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    cur.execute("create task fin finalize = root as select 1")
+    cur.execute("select system$task_dependents_enable('root')")
+    assert _show(cur, "state", "fin") == [("started",)]
 
 
 def test_task_dependents_enable_leaves_other_graphs_suspended(cur: snowflake.connector.cursor.SnowflakeCursor):

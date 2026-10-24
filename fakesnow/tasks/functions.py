@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from sqlglot import Expr, exp
@@ -40,6 +40,9 @@ _FUNCTIONS = {
 }
 _NULL = exp.Null()
 
+# provisional formats, to be checked against live Snowflake (see "Live checks" in the plan)
+_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%f%z"  # rendered in UTC
+
 
 def task_functions(expression: Expr, context: TaskRunContext | None) -> Expr:
     """Replace the SYSTEM$ functions that read, or set, the state of the task run the statement is part of. Outside
@@ -69,6 +72,7 @@ def store_return_value(context: TaskRunContext | None, result: pa.Table) -> None
 def _read(function: str, args: list[Expr], context: TaskRunContext) -> str | None:
     arg = args[0].name if args else None
     if function == "CURRENT_USER_TASK_NAME":
+        # the bare name, where TASK_RUNTIME_INFO gives the fqname
         return context.task.name
     if function == "TASK_RUNTIME_INFO":
         return _runtime_info(arg, context)
@@ -77,7 +81,7 @@ def _read(function: str, args: list[Expr], context: TaskRunContext) -> str | Non
     # GET_PREDECESSOR_RETURN_VALUE, with no argument the only predecessor's
     values = context.predecessor_return_values
     if arg is None:
-        return next(iter(values.values())) if len(values) == 1 else None
+        return next(iter(values.values())) if len(values) == 1 else None  # ambiguous with several
     return values.get(parse_task_name(arg).name)
 
 
@@ -93,7 +97,7 @@ def _runtime_info(field: str | None, context: TaskRunContext) -> str | None:
             return context.graph_run_group_id
         case "CURRENT_TASK_GRAPH_ORIGINAL_SCHEDULED_TIMESTAMP":
             # the run id is the root's scheduled time in epoch milliseconds
-            return datetime.fromtimestamp(context.run_id / 1000).astimezone().isoformat()
+            return datetime.fromtimestamp(context.run_id / 1000, UTC).strftime(_TIMESTAMP_FORMAT)
         case _:
             return None
 

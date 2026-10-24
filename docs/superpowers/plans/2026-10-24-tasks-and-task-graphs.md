@@ -506,3 +506,8 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
     (fakesnow: skipped); whether TASK_HISTORY `CONFIG` is set on every task row of the run or only the root's
     (fakesnow: every row); a skipped task's `QUERY_ID` and `QUERY_START_TIME` (fakesnow: NULL); a child's
     `SCHEDULED_TIME` (fakesnow: when it became ready to run); a `WHEN` that raises (fakesnow: `FAILED`).
+17. `SYSTEM$` task functions (`fakesnow/tasks/functions.py`): `TASK_RUNTIME_INFO('CURRENT_TASK_NAME')` and
+    `'CURRENT_ROOT_TASK_NAME'` return the fqname (fakesnow: `DB.SCHEMA.TASK`); `SYSTEM$CURRENT_USER_TASK_NAME()` returns
+    the bare name; the format of `'CURRENT_TASK_GRAPH_ORIGINAL_SCHEDULED_TIMESTAMP'` (fakesnow: UTC,
+    `%Y-%m-%dT%H:%M:%S.%f%z`); `GET_PREDECESSOR_RETURN_VALUE()` with no argument and several predecessors (fakesnow:
+    NULL).

@@ -1,4 +1,5 @@
 import tempfile
+from datetime import datetime
 
 import pytest
 import snowflake.connector
@@ -1606,12 +1607,59 @@ def test_task_functions_match_case_insensitively(cur: snowflake.connector.cursor
     assert cur.fetchall() == [("T1",)]
 
 
-def test_task_functions_outside_task_return_null(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute(
-        """select system$current_user_task_name() as a, system$task_runtime_info('CURRENT_TASK_NAME') as b,
-        system$get_task_graph_config() as c, system$get_predecessor_return_value('t') as d"""
-    )
-    assert cur.fetchall() == [(None, None, None, None)]
+@pytest.mark.parametrize(
+    "call",
+    [
+        "system$current_user_task_name()",
+        "system$task_runtime_info('CURRENT_TASK_NAME')",
+        "system$get_task_graph_config()",
+        "system$get_predecessor_return_value('t')",
+    ],
+)
+def test_task_function_outside_task_returns_null(cur: snowflake.connector.cursor.SnowflakeCursor, call: str):
+    cur.execute(f"select {call}")
+    assert cur.fetchall() == [(None,)]
+
+
+def _runtime_info(cur: snowflake.connector.cursor.SnowflakeCursor, field: str) -> str:
+    """The value a task sees for a TASK_RUNTIME_INFO field."""
+    cur.execute("create or replace table seen (v varchar)")
+    cur.execute(f"create or replace task t1 as insert into seen select system$task_runtime_info('{field}')")
+    cur.execute("execute task t1")
+    cur.execute("select v from seen")
+    ((value,),) = cur.fetchall()
+    return value
+
+
+def test_task_runtime_info_current_task_name(cur: snowflake.connector.cursor.SnowflakeCursor):
+    assert _runtime_info(cur, "CURRENT_TASK_NAME") == "DB1.SCHEMA1.T1"
+
+
+def test_task_runtime_info_current_root_task_uuid(cur: snowflake.connector.cursor.SnowflakeCursor):
+    value = _runtime_info(cur, "CURRENT_ROOT_TASK_UUID")
+    assert _show(cur, "id", "t1") == [(value,)]
+
+
+def test_task_runtime_info_original_scheduled_timestamp(cur: snowflake.connector.cursor.SnowflakeCursor):
+    value = _runtime_info(cur, "CURRENT_TASK_GRAPH_ORIGINAL_SCHEDULED_TIMESTAMP")
+    ((scheduled,),) = _history(cur, "scheduled_time")
+    # in UTC, to the millisecond
+    assert value.endswith("+0000")
+    assert 0 <= (scheduled - datetime.fromisoformat(value)).total_seconds() < 0.001
+
+
+def test_get_predecessor_return_value_without_argument_and_several_predecessors(
+    cur: snowflake.connector.cursor.SnowflakeCursor,
+):
+    cur.execute("create table seen (v varchar)")
+    cur.execute("create task root as select 1")
+    cur.execute("create task a after root as select system$set_return_value('a')")
+    cur.execute("create task b after root as select system$set_return_value('b')")
+    cur.execute("create task c after a, b as insert into seen select system$get_predecessor_return_value()")
+    cur.execute("select system$task_dependents_enable('root')")
+    cur.execute("execute task root")
+    cur.execute("select v from seen")
+    assert cur.fetchall() == [(None,)]
 
 
 def test_set_return_value_outside_task_returns_null(cur: snowflake.connector.cursor.SnowflakeCursor):

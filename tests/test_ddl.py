@@ -240,6 +240,27 @@ def test_swap_shadowing_temporary_tables_leaves_permanent_metadata(cur: snowflak
     assert cur.fetchall() == [("A", "from a"), ("B", "from b")]
 
 
+def test_create_permanent_table_beside_temporary_keeps_text_lengths(
+    cur: snowflake.connector.cursor.SnowflakeCursor,
+):
+    cur.execute("create temporary table t (c int)")
+    cur.execute("create table t (c varchar(5))")
+    # drops the temporary table, which shadows the permanent one
+    cur.execute("drop table t")
+    cur.execute(
+        "select character_maximum_length from information_schema.columns where table_name = 'T' and column_name = 'C'"
+    )
+    assert cur.fetchall() == [(5,)]
+
+
+def test_create_permanent_table_beside_temporary_keeps_comment(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create temporary table t (c int)")
+    cur.execute("create table t (c int) comment = 'permanent'")
+    cur.execute("drop table t")
+    cur.execute("select comment from information_schema.tables where table_name = 'T'")
+    assert cur.fetchall() == [("permanent",)]
+
+
 def test_qualified_temporary_table_is_session_isolated(conn: snowflake.connector.SnowflakeConnection):
     conn.cursor().execute("create temporary table db1.schema1.tt (a int)")
     with (

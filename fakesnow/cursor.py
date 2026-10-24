@@ -718,8 +718,12 @@ class FakeSnowflakeCursor:
         # comment and text lengths aren't recorded. Under their Snowflake name they'd replace a permanent table's.
         created_temporary = bool(transformed.args.get("temporary_owner"))
 
+        def names_temporary(table: exp.Table) -> bool:
+            # a permanent CREATE's target is the new permanent table, even when a temporary one has its name
+            return created_temporary or (not isinstance(transformed, exp.Create) and self._is_temporary(table))
+
         if (table_comment := cast(tuple[exp.Table, str], transformed.args.get("table_comment"))) and not (
-            created_temporary or self._is_temporary(table_comment[0])
+            names_temporary(table_comment[0])
         ):
             # record table comment
             table, comment = table_comment
@@ -741,7 +745,7 @@ class FakeSnowflakeCursor:
         if (
             (text_lengths := cast(list[tuple[str, int]], transformed.args.get("text_lengths")))
             and (table := transformed.find(exp.Table))
-            and not (created_temporary or self._is_temporary(table))
+            and not names_temporary(table)
         ):
             # record text lengths
             catalog = table.catalog or self._conn.database

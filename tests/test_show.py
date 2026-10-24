@@ -744,9 +744,12 @@ def test_query_tag_unset_restores_default(dcur: snowflake.connector.cursor.Snowf
     assert dcur.fetchall() == [QUERY_TAG_PARAMETER]
 
 
-def test_alter_session_set_several_parameters_not_implemented(dcur: snowflake.connector.cursor.SnowflakeCursor):
-    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="not implemented"):
-        dcur.execute("ALTER SESSION SET QUERY_TAG = 'a', TIMEZONE = 'UTC'")
+@pytest.mark.xfail(reason="setting several parameters in one ALTER SESSION is not implemented", strict=True)
+def test_alter_session_set_several_parameters(dcur: snowflake.connector.cursor.SnowflakeCursor):
+    dcur.execute("ALTER SESSION SET QUERY_TAG = 'a', QUOTED_IDENTIFIERS_IGNORE_CASE = false")
+    assert dcur.fetchall() == [{"status": "Statement executed successfully."}]
+    dcur.execute("SHOW PARAMETERS LIKE 'QUERY_TAG' IN SESSION")
+    assert dcur.fetchall() == [QUERY_TAG_PARAMETER | {"value": "a", "level": "SESSION"}]
 
 
 def _ownership(granted_on: str, name: str, role: str = "PUBLIC") -> dict:

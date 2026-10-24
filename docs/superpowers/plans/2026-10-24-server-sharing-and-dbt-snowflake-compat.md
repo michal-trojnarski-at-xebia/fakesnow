@@ -360,7 +360,7 @@ def test_alter_session_set_query_tag(dcur):
 
 
 def test_query_tag_unset_restores_default(dcur):
-    dcur.execute("ALTER SESSION SET QUERY_TAG = $$it's {\"a\": 1}$$")
+    dcur.execute('ALTER SESSION SET QUERY_TAG = $$it\'s {"a": 1}$$')
     dcur.execute("ALTER SESSION UNSET QUERY_TAG")
     dcur.execute("SHOW PARAMETERS LIKE 'QUERY_TAG'")
     assert dcur.fetchall() == [QUERY_TAG_PARAMETER]

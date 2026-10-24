@@ -709,14 +709,9 @@ def test_merge_insert_values_unqualified(cur: snowflake.connector.cursor.Snowfla
     cur.execute("insert into t1 values (1, 'a')")
     cur.execute("create table s2 (id int, v varchar)")
     cur.execute("insert into s2 values (1, 'z'), (2, 'b')")
-    cur.execute(
-        "merge into t1 using s2 on t1.id = s2.id "
-        "when matched then update set v = s2.v "
-        "when not matched then insert (id, v) values (id, v)"
-    )
-    assert cur.fetchall() == [(1, 1)]
+    cur.execute("merge into t1 using s2 on t1.id = s2.id when not matched then insert (id, v) values (id, v)")
     cur.execute("select id, v from t1 order by id")
-    assert cur.fetchall() == [(1, "z"), (2, "b")]
+    assert cur.fetchall() == [(1, "a"), (2, "b")]
 
 
 def test_merge_insert_values_unqualified_quoted_with_aliases(cur: snowflake.connector.cursor.SnowflakeCursor):

@@ -95,6 +95,10 @@ class ShowTasks:
 TaskStatement = CreateTask | AlterTask | DropTask | ExecuteTask | ShowTasks | DescribeTask | EnableDependents
 
 
+# a quoted string, or a dollar-quoted one, which the tokenizer gives without its $$
+_STRINGS = (TokenType.STRING, TokenType.RAW_STRING)
+
+
 class _Tokens:
     def __init__(self, sql: str, tokens: list[Token]) -> None:
         self.sql = sql
@@ -110,7 +114,7 @@ class _Tokens:
         if i >= len(self.tokens):
             return None
         t = self.tokens[i]
-        return None if t.token_type in (TokenType.IDENTIFIER, TokenType.STRING) else t.text.upper()
+        return None if t.token_type in (TokenType.IDENTIFIER, *_STRINGS) else t.text.upper()
 
     def accept(self, *words: str) -> bool:
         """Consume the keyword sequence if it is next."""
@@ -136,7 +140,7 @@ class _Tokens:
 
     def string(self) -> str:
         t = self.next()
-        if t.token_type != TokenType.STRING:
+        if t.token_type not in _STRINGS:
             self.pos -= 1
             self.fail("a string literal")
         return t.text
@@ -145,7 +149,7 @@ class _Tokens:
         t = self.next()
         if t.token_type == TokenType.IDENTIFIER:
             return t.text
-        if t.token_type in (TokenType.STRING, TokenType.NUMBER, TokenType.COMMA, TokenType.DOT, TokenType.EQ):
+        if t.token_type in (*_STRINGS, TokenType.NUMBER, TokenType.COMMA, TokenType.DOT, TokenType.EQ):
             self.pos -= 1
             self.fail("an identifier")
         return normalise_ident(t.text)
@@ -171,7 +175,7 @@ class _Tokens:
 
     def value(self) -> str:
         t = self.tokens[self.pos] if not self.at_end() else None
-        if t and t.token_type in (TokenType.STRING, TokenType.NUMBER):
+        if t and t.token_type in (*_STRINGS, TokenType.NUMBER):
             self.pos += 1
             return t.text
         if t and t.token_type in (TokenType.TRUE, TokenType.FALSE):

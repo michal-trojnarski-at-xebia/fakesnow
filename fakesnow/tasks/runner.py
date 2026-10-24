@@ -35,9 +35,10 @@ def run_graph(conn: FakeSnowflakeConnection, catalog: TaskCatalog, root: Task, c
         raise snowflake.connector.errors.ProgrammingError(
             msg=NOT_ROOT.format(fqname=root.fqname), errno=2003, sqlstate="02000"
         )
-    if conn._in_transaction:  # noqa: SLF001
-        # the task sessions see the caller's writes, and a later rollback by the caller can't undo the run
-        conn.commit()
+    # commit the caller's transaction, explicit or implicit, so the task sessions see its writes and a later
+    # rollback by the caller can't undo the run. without an active transaction this is a no-op.
+    conn._duck_conn.commit()  # noqa: SLF001
+    conn._in_transaction = False  # noqa: SLF001
     _GraphRun(conn, catalog, root, root.config if config_override is None else config_override).run()
 
 

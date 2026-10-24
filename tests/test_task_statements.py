@@ -208,3 +208,15 @@ def test_parse_execute_task_trailing_semicolon(suffix: str):
 
 def test_parse_execute_task_using_config_trailing_semicolon():
     assert parse_task_statement("execute task t1 using config = '{}';") == ExecuteTask(TaskName(None, None, "T1"), "{}")
+
+
+def test_parse_execute_task_using_dollar_quoted_config():
+    assert parse_task_statement("""execute task t1 using config = $${"a": 1}$$""") == ExecuteTask(
+        TaskName(None, None, "T1"), '{"a": 1}'
+    )
+
+
+def test_parse_create_task_dollar_quoted_property_kept_verbatim():
+    s = parse_task_statement("""create task t1 config = $${"a": 1}$$ as select 1""")
+    assert isinstance(s, CreateTask)
+    assert s.properties == {"CONFIG": '{"a": 1}'}

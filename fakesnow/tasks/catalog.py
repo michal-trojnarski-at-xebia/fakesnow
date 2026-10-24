@@ -12,13 +12,14 @@ import snowflake.connector.errors
 from duckdb import DuckDBPyConnection
 
 from fakesnow import checks
-from fakesnow.tasks.statements import CreateTask, DropTask, TaskName
+from fakesnow.tasks.statements import AlterTask, CreateTask, DropTask, TaskName
 from fakesnow.transforms.temporary import check_schema_exists
 
 # provisional messages and values, to be checked against live Snowflake
 CREATED = "Task {name} successfully created."
 EXISTS = "{name} already exists, statement succeeded."
 DROPPED = "{name} successfully dropped."
+ALTERED = "Statement executed successfully."
 DROP_MISSING = "Drop statement executed successfully ({name} already dropped)."
 ALREADY_EXISTS = "SQL compilation error:\nObject '{fqname}' already exists."
 DOES_NOT_EXIST = "SQL compilation error:\nTask '{fqname}' does not exist or not authorized."
@@ -45,6 +46,7 @@ SUSPENDED = "suspended"
 STARTED = "started"
 CHILD_BECAME_ROOT = "CHILD_BECAME_ROOT"
 FINALIZER_BECAME_ROOT = "FINALIZER_BECAME_ROOT"
+USER_SUSPENDED = "USER_SUSPENDED"
 
 # task properties with a column of their own, by property name
 COLUMN_PROPERTIES = {
@@ -253,16 +255,71 @@ class TaskCatalog:
                 last_suspended_on=existing.last_suspended_on,
                 last_suspended_reason=existing.last_suspended_reason,
             )
-        if existing:
-            self.check_root_suspended(existing)
         after = (
             [self.resolve(a) for a in stmt.after]
             if not stmt.clone_of
             else [(database, schema, p) for p in task.predecessors]
         )
+        self._store(task, existing, after)
+        return _status(CREATED, name)
+
+    def alter(self, stmt: AlterTask) -> str:
+        database, schema, name = self.resolve(stmt.name)
+        task = self.get(database, schema, name)
+        if task is None:
+            if stmt.if_exists:
+                return _status(ALTERED, name)
+            raise _error(DOES_NOT_EXIST.format(fqname=f"{database}.{schema}.{name}"), 2003, "02000")
+        if stmt.action in ("RESUME", "SUSPEND"):
+            # a root can always be resumed or suspended, a child only while its root is suspended
+            if self.root_of(task).name != task.name:
+                self.check_root_suspended(task)
+            self.save(_resumed(task) if stmt.action == "RESUME" else _suspended(task, USER_SUSPENDED))
+            return _status(ALTERED, name)
+
+        new = replace(task, predecessors=list(task.predecessors), properties=dict(task.properties))
+        new.session_parameters = dict(task.session_parameters)
+        if stmt.action == "ADD_AFTER":
+            for pred in stmt.tasks:
+                if (pred_name := self.resolve(pred)[2]) not in new.predecessors:
+                    new.predecessors.append(pred_name)
+        elif stmt.action == "REMOVE_AFTER":
+            removed = {r[2] for r in map(self.resolve, stmt.tasks) if r[:2] == (database, schema)}
+            new.predecessors = [p for p in new.predecessors if p not in removed]
+            if task.predecessors and not new.predecessors:
+                new = _suspended(new, CHILD_BECAME_ROOT)
+        elif stmt.action == "SET":
+            for prop, value in stmt.properties.items():
+                _set_property(new, prop, value)
+        elif stmt.action == "UNSET":
+            for prop in stmt.unset:
+                _unset_property(new, prop)
+            if task.finalize and not new.finalize:
+                new = _suspended(new, FINALIZER_BECAME_ROOT)
+        elif stmt.action == "MODIFY_AS":
+            new.definition = stmt.text
+        elif stmt.action == "MODIFY_WHEN":
+            new.condition = stmt.text
+        elif stmt.action == "REMOVE_WHEN":
+            new.condition = None
+        self._store(new, task, [(database, schema, p) for p in new.predecessors])
+        return _status(ALTERED, name)
+
+    def enable_dependents(self, name: TaskName) -> None:
+        """Resume the task and all its dependents."""
+        task = self.require(name)
+        if self.root_of(task).name != task.name:
+            self.check_root_suspended(task)
+        for member in self.graph(task):
+            self.save(_resumed(member))
+
+    def _store(self, task: Task, existing: Task | None, after: list[tuple[str, str, str]]) -> None:
+        """Check the graph rules and save a new or changed task. A task already in a started graph can't change,
+        nor can one join a started graph."""
+        if existing:
+            self.check_root_suspended(existing)
         self._check_graph(task, after)
         self.save(task)
-        return _status(CREATED, name)
 
     def _check_graph(self, task: Task, after: list[tuple[str, str, str]]) -> None:
         """Check the rules for a task about to be saved, in the order Snowflake reports them."""
@@ -341,26 +398,12 @@ class TaskCatalog:
             raise _error(DOES_NOT_EXIST.format(fqname=f"{database}.{schema}.{name}"), 2003, "02000")
         self.check_root_suspended(task)
         # dependents of the dropped task become standalone
-        now = _now()
         for child in self.children(task):
             child.predecessors.remove(name)
-            if not child.predecessors:
-                self.save(
-                    replace(child, state=SUSPENDED, last_suspended_on=now, last_suspended_reason=CHILD_BECAME_ROOT)
-                )
-            else:
-                self.save(child)
+            self.save(child if child.predecessors else _suspended(child, CHILD_BECAME_ROOT))
         finalizer = self.finalizer_of(task)
         if finalizer:
-            self.save(
-                replace(
-                    finalizer,
-                    finalize=None,
-                    state=SUSPENDED,
-                    last_suspended_on=now,
-                    last_suspended_reason=FINALIZER_BECAME_ROOT,
-                )
-            )
+            self.save(_suspended(replace(finalizer, finalize=None), FINALIZER_BECAME_ROOT))
         self.delete(database, schema, name)
         return _status(DROPPED, name)
 
@@ -443,21 +486,44 @@ class TaskCatalog:
             definition=stmt.definition,
         )
         for prop, value in stmt.properties.items():
-            if prop in COLUMN_PROPERTIES:
-                column = COLUMN_PROPERTIES[prop]
-                if column == "allow_overlapping_execution":
-                    task.allow_overlapping_execution = value.upper() == "TRUE"
-                elif column == "finalize":
-                    task.finalize = value.rsplit(".", 1)[-1]
-                else:
-                    setattr(task, column, value)
-            elif prop in OTHER_PROPERTIES:
-                task.properties[prop] = value
-            elif prop in SESSION_PARAMETERS and not (prop == "AUTOCOMMIT" and value.upper() == "FALSE"):
-                task.session_parameters[prop] = value
-            else:
-                raise _error(INVALID_PROPERTY.format(prop=prop), 1008, "22023")
+            _set_property(task, prop, value)
         return task
+
+
+def _set_property(task: Task, prop: str, value: str) -> None:
+    if prop in COLUMN_PROPERTIES:
+        column = COLUMN_PROPERTIES[prop]
+        if column == "allow_overlapping_execution":
+            task.allow_overlapping_execution = value.upper() == "TRUE"
+        elif column == "finalize":
+            task.finalize = value.rsplit(".", 1)[-1]
+        else:
+            setattr(task, column, value)
+    elif prop in OTHER_PROPERTIES:
+        task.properties[prop] = value
+    elif prop in SESSION_PARAMETERS and not (prop == "AUTOCOMMIT" and value.upper() == "FALSE"):
+        task.session_parameters[prop] = value
+    else:
+        raise _error(INVALID_PROPERTY.format(prop=prop), 1008, "22023")
+
+
+def _unset_property(task: Task, prop: str) -> None:
+    if prop in COLUMN_PROPERTIES:
+        setattr(task, COLUMN_PROPERTIES[prop], None)
+    elif prop in OTHER_PROPERTIES:
+        task.properties.pop(prop, None)
+    elif prop in SESSION_PARAMETERS:
+        task.session_parameters.pop(prop, None)
+    else:
+        raise _error(INVALID_PROPERTY.format(prop=prop), 1008, "22023")
+
+
+def _resumed(task: Task) -> Task:
+    return replace(task, state=STARTED, last_committed_on=task.last_committed_on or _now())
+
+
+def _suspended(task: Task, reason: str) -> Task:
+    return replace(task, state=SUSPENDED, last_suspended_on=_now(), last_suspended_reason=reason)
 
 
 def _now() -> datetime:

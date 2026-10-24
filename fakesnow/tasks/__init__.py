@@ -10,23 +10,57 @@ from duckdb import DuckDBPyConnection
 from sqlglot import Expr, exp
 
 from fakesnow.tasks.catalog import TaskCatalog
-from fakesnow.tasks.statements import CreateTask, DropTask, TaskStatement, parse_task_statement
+from fakesnow.tasks.statements import (
+    AlterTask,
+    CreateTask,
+    DropTask,
+    EnableDependents,
+    TaskStatement,
+    parse_task_name,
+    parse_task_statement,
+)
 from fakesnow.transforms.transforms import SUCCESS_NOP
 
 if TYPE_CHECKING:
     from fakesnow.conn import FakeSnowflakeConnection
 
 
-_COMMANDS: dict[type, str] = {CreateTask: "CREATE TASK", DropTask: "DROP TASK"}
+_COMMANDS: dict[type, str] = {
+    CreateTask: "CREATE TASK",
+    AlterTask: "ALTER TASK",
+    DropTask: "DROP TASK",
+    EnableDependents: "SYSTEM$TASK_DEPENDENTS_ENABLE",
+}
+_ENABLE_DEPENDENTS = "SYSTEM$TASK_DEPENDENTS_ENABLE"
 
 
 def task_statement(expression: Expr) -> Expr:
     """Replace a task statement, which sqlglot parses as an opaque command, with a placeholder carrying it."""
-    if isinstance(expression, exp.Command) and (statement := parse_task_statement(expression.sql("snowflake"))):
+    statement = None
+    if isinstance(expression, exp.Command):
+        statement = parse_task_statement(expression.sql("snowflake"))
+    elif isinstance(expression, exp.Select):
+        statement = _enable_dependents(expression)
+    elif isinstance(expression, exp.Anonymous) and expression.name.upper() == _ENABLE_DEPENDENTS:
+        # a use other than SELECT SYSTEM$TASK_DEPENDENTS_ENABLE('<name>'), which is replaced before it is reached
+        raise NotImplementedError(f"{_ENABLE_DEPENDENTS} is only supported as the sole column of a SELECT")
+    if statement:
         placeholder = SUCCESS_NOP.copy()
         placeholder.args["task_statement"] = statement
         return placeholder
     return expression
+
+
+def _enable_dependents(select: exp.Select) -> EnableDependents | None:
+    """The statement if the SELECT is only a SYSTEM$TASK_DEPENDENTS_ENABLE call with a string literal argument."""
+    if {k for k, v in select.args.items() if v} != {"expressions"} or len(select.expressions) != 1:
+        return None
+    call = select.expressions[0]
+    if not (isinstance(call, exp.Anonymous) and call.name.upper() == _ENABLE_DEPENDENTS):
+        return None
+    if len(call.expressions) != 1 or not (isinstance(arg := call.expressions[0], exp.Literal) and arg.is_string):
+        return None
+    return EnableDependents(parse_task_name(arg.name), arg.name)
 
 
 def execute(statement: TaskStatement, conn: FakeSnowflakeConnection) -> str:
@@ -40,8 +74,14 @@ def execute(statement: TaskStatement, conn: FakeSnowflakeConnection) -> str:
     )
     if isinstance(statement, CreateTask):
         return catalog.create(statement)
+    if isinstance(statement, AlterTask):
+        return catalog.alter(statement)
     if isinstance(statement, DropTask):
         return catalog.drop(statement)
+    if isinstance(statement, EnableDependents):
+        catalog.enable_dependents(statement.name)
+        column = f"{_ENABLE_DEPENDENTS}('{statement.argument}')".replace('"', '""')
+        return f'SELECT NULL AS "{column}"'
     raise NotImplementedError(type(statement).__name__)
 
 

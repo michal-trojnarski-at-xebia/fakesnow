@@ -7,6 +7,7 @@ from fakesnow.tasks.statements import (
     CreateTask,
     DescribeTask,
     DropTask,
+    EnableDependents,
     ExecuteTask,
     ShowTasks,
 )
@@ -63,6 +64,7 @@ _TASK_STATEMENT_TYPES: dict[type, int] = {
     ShowTasks: SHOW,
     DescribeTask: DESCRIBE,
     ExecuteTask: UNKNOWN,
+    EnableDependents: SELECT,
 }
 
 

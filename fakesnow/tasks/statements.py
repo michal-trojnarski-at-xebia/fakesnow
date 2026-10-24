@@ -68,6 +68,14 @@ class ExecuteTask:
 
 
 @dataclass
+class EnableDependents:
+    """SELECT SYSTEM$TASK_DEPENDENTS_ENABLE('<name>'), with the argument as written for the result column name."""
+
+    name: TaskName
+    argument: str
+
+
+@dataclass
 class DescribeTask:
     name: TaskName
 
@@ -84,7 +92,7 @@ class ShowTasks:
     limit_from: str | None
 
 
-TaskStatement = CreateTask | AlterTask | DropTask | ExecuteTask | ShowTasks | DescribeTask
+TaskStatement = CreateTask | AlterTask | DropTask | ExecuteTask | ShowTasks | DescribeTask | EnableDependents
 
 
 class _Tokens:
@@ -201,6 +209,17 @@ class _Tokens:
     def expect_end(self) -> None:
         if not self.at_end():
             self.fail("end of statement")
+
+
+def parse_task_name(text: str) -> TaskName:
+    """Parse a possibly qualified task name, eg: the argument of SYSTEM$TASK_DEPENDENTS_ENABLE."""
+    try:
+        t = _Tokens(text, sqlglot.tokenize(text, read="snowflake"))
+    except TokenError as e:
+        raise TaskSyntaxError(f"SQL compilation error: invalid task name '{text}'.") from e
+    name = t.name()
+    t.expect_end()
+    return name
 
 
 def parse_task_statement(sql: str) -> TaskStatement | None:

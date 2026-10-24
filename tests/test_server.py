@@ -887,6 +887,19 @@ def test_server_default_db_path_persists(tmp_path: Path) -> None:
         assert cur.fetchall() == [(2,)]
 
 
+@pytest.mark.timeout(60)
+def test_server_stopping_one_of_two_servers_on_a_db_path_keeps_the_other_serving(tmp_path: Path) -> None:
+    with (
+        fakesnow.server(db_path=str(tmp_path)) as kwargs,
+        snowflake.connector.connect(**kwargs, database="db1", schema="s1") as conn,
+    ):
+        with fakesnow.server(db_path=str(tmp_path)):
+            pass
+        cur = conn.cursor()
+        cur.execute("select 1")
+        assert cur.fetchall() == [(1,)]
+
+
 def test_server_missing_db_path_raises(tmp_path: Path) -> None:
     missing = tmp_path / "missing"
     with pytest.raises(NotADirectoryError, match="No such directory"), fakesnow.server(db_path=str(missing)):

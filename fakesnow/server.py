@@ -40,6 +40,8 @@ logger.setLevel(logging.INFO)
 default_db_path: str | None = None
 # instances keyed by realpath of their db_path. handlers run on the event loop thread, so no lock is needed.
 _instances: dict[str, FakeSnow] = {}
+# number of running servers defaulting to each instance key, so the instance outlives all but the last
+_server_counts: dict[str, int] = {}
 sessions: dict[str, FakeSnowflakeConnection] = {}
 
 
@@ -63,16 +65,25 @@ def instance_for(db_path: str | None) -> FakeSnow:
 def set_default_db_path(db_path: str | None) -> Callable[[], None]:
     """Set the default db_path and return a function that restores the previous default.
 
-    Restoring also closes the instance for db_path, but no others, so other servers in the same process
-    keep their instances and sessions.
+    Restoring also closes the instance for db_path once no other server in the process defaults to it, so other
+    servers keep their instances and sessions.
     """
     global default_db_path
     previous, default_db_path = default_db_path, db_path
+    key = _instance_key(db_path)
+    if db_path:
+        _server_counts[key] = _server_counts.get(key, 0) + 1
 
     def restore() -> None:
         global default_db_path
         default_db_path = previous
-        if db_path and (fs := _instances.pop(_instance_key(db_path), None)):
+        if not db_path:
+            return
+        _server_counts[key] -= 1
+        if _server_counts[key]:
+            return
+        del _server_counts[key]
+        if fs := _instances.pop(key, None):
             fs.duck_conn.close()
 
     return restore

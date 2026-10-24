@@ -11,7 +11,9 @@ from typing import Any
 import snowflake.connector.errors
 from duckdb import DuckDBPyConnection
 
+from fakesnow import checks
 from fakesnow.tasks.statements import CreateTask, DropTask, TaskName
+from fakesnow.transforms.temporary import check_schema_exists
 
 # provisional messages and values, to be checked against live Snowflake
 CREATED = "Task {name} successfully created."
@@ -21,13 +23,6 @@ DROP_MISSING = "Drop statement executed successfully ({name} already dropped)."
 ALREADY_EXISTS = "SQL compilation error:\nObject '{fqname}' already exists."
 DOES_NOT_EXIST = "SQL compilation error:\nTask '{fqname}' does not exist or not authorized."
 INVALID_PROPERTY = "SQL compilation error:\ninvalid property '{prop}' for 'TASK'"
-NO_DATABASE = (
-    "Cannot perform {command}. This session does not have a current database. "
-    "Call 'USE DATABASE', or use a qualified name."
-)
-NO_SCHEMA = (
-    "Cannot perform {command}. This session does not have a current schema. Call 'USE SCHEMA', or use a qualified name."
-)
 
 SUSPENDED = "suspended"
 
@@ -129,20 +124,22 @@ class TaskCatalog:
         current_database: str | None,
         current_schema: str | None,
         role: str,
+        command: str,
     ) -> None:
         self.duck_conn = duck_conn
         self.current_database = current_database
         self.current_schema = current_schema
         self.role = role
+        self.command = command  # the statement being run, eg: CREATE TASK, for errors
 
-    def resolve(self, name: TaskName, command: str) -> tuple[str, str, str]:
-        """Qualify a task name with the session's database and schema. command names the statement for errors."""
+    def resolve(self, name: TaskName) -> tuple[str, str, str]:
+        """Qualify a task name with the session's database and schema."""
         database = name.database or self.current_database
         if not database:
-            raise _error(NO_DATABASE.format(command=command), 90105, "22000")
+            raise checks.no_current_database_error(self.command)
         schema = name.schema or self.current_schema
         if not schema:
-            raise _error(NO_SCHEMA.format(command=command), 90106, "22000")
+            raise checks.no_current_schema_error(self.command)
         return database, schema, name.name
 
     def get(self, database: str, schema: str, name: str) -> Task | None:
@@ -153,15 +150,17 @@ class TaskCatalog:
             ).fetchone()
         return _task(database, row) if row else None
 
-    def require(self, name: TaskName, command: str) -> Task:
-        database, schema, task_name = self.resolve(name, command)
+    def require(self, name: TaskName) -> Task:
+        database, schema, task_name = self.resolve(name)
         task = self.get(database, schema, task_name)
         if task is None:
             raise _error(DOES_NOT_EXIST.format(fqname=f"{database}.{schema}.{task_name}"), 2003, "02000")
         return task
 
     def create(self, stmt: CreateTask) -> str:
-        database, schema, name = self.resolve(stmt.name, "CREATE TASK")
+        database, schema, name = self.resolve(stmt.name)
+        with self.duck_conn.cursor() as conn:
+            check_schema_exists(conn, database, schema)
         task = self._new(database, schema, name, stmt)
         existing = self.get(database, schema, name)
         if existing is None or stmt.replace:
@@ -186,14 +185,22 @@ class TaskCatalog:
         return _status(CREATED, name)
 
     def drop(self, stmt: DropTask) -> str:
-        database, schema, name = self.resolve(stmt.name, "DROP TASK")
+        database, schema, name = self.resolve(stmt.name)
         if self.get(database, schema, name) is None:
             if stmt.if_exists:
                 return _status(DROP_MISSING, name)
             raise _error(DOES_NOT_EXIST.format(fqname=f"{database}.{schema}.{name}"), 2003, "02000")
+        self.delete(database, schema, name)
+        return _status(DROPPED, name)
+
+    def delete(self, database: str, schema: str, name: str) -> None:
         with self.duck_conn.cursor() as conn:
             conn.execute(f"delete from {_table(database)} where schema_name = ? and name = ?", [schema, name])
-        return _status(DROPPED, name)
+
+    def delete_schema(self, database: str, schema: str) -> None:
+        """Delete every task in a schema."""
+        with self.duck_conn.cursor() as conn:
+            conn.execute(f"delete from {_table(database)} where schema_name = ?", [schema])
 
     def save(self, task: Task) -> None:
         """Insert or replace the task. Writes go through a separate cursor, so they neither commit nor join the
@@ -231,7 +238,7 @@ class TaskCatalog:
 
     def _new(self, database: str, schema: str, name: str, stmt: CreateTask) -> Task:
         if stmt.clone_of:
-            source = self.require(stmt.clone_of, "CREATE TASK")
+            source = self.require(stmt.clone_of)
             # everything but the identity, state and run history is copied
             return replace(
                 source,

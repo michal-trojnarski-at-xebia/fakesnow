@@ -477,8 +477,9 @@ Test `tests/test_tasks.py`
 
 Provisional values to verify with `snowflake-check` and correct in their owning module and tests:
 
-1. Status rows: CREATE/DROP/ALTER TASK, CREATE IF NOT EXISTS on an existing task, EXECUTE TASK.
-2. Errors: missing task, unknown property, started root, missing/other-schema predecessor, schedule on a child,
+1. Status rows: CREATE/DROP/ALTER TASK, CREATE IF NOT EXISTS on an existing task, CREATE OR ALTER on an existing
+   task (currently the CREATED status), DROP TASK IF EXISTS on a missing task (`DROP_MISSING`), EXECUTE TASK.
+2. Errors: missing task, unknown property, duplicate CREATE (`ALREADY_EXISTS`), missing schema or database on CREATE, started root, missing/other-schema predecessor, schedule on a child,
    finalizer rules, cycle, limits, EXECUTE TASK on a child.
 3. SHOW TASKS / DESCRIBE TASK columns and values (spec check 1).
 4. Current database/schema inside a task run; `SYSTEM$` task functions outside a task (spec check 4).

@@ -26,6 +26,7 @@ import fakesnow.checks as checks
 import fakesnow.expr as expr
 import fakesnow.info_schema as info_schema
 import fakesnow.macros as macros
+import fakesnow.statement_type as statement_type
 import fakesnow.tasks as tasks
 import fakesnow.transforms as transforms
 from fakesnow import logger
@@ -289,19 +290,9 @@ class FakeSnowflakeCursor:
         no_database, no_schema = checks.is_unqualified_table_expression(expression)
 
         if no_database and not self._conn.database_set:
-            cmd = expr.key_command(expression)
-            raise snowflake.connector.errors.ProgrammingError(
-                msg=f"Cannot perform {cmd}. This session does not have a current database. Call 'USE DATABASE', or use a qualified name.",  # noqa: E501
-                errno=90105,
-                sqlstate="22000",
-            )
+            raise checks.no_current_database_error(expr.key_command(expression))
         elif no_schema and not self._conn.schema_set:
-            cmd = expr.key_command(expression)
-            raise snowflake.connector.errors.ProgrammingError(
-                msg=f"Cannot perform {cmd}. This session does not have a current schema. Call 'USE SCHEMA', or use a qualified name.",  # noqa: E501
-                errno=90106,
-                sqlstate="22000",
-            )
+            raise checks.no_current_schema_error(expr.key_command(expression))
 
     def _transform(self, expression: Expr, params: MutableParams | None) -> Expr:
         return (
@@ -500,8 +491,13 @@ class FakeSnowflakeCursor:
             # see https://docs.snowflake.com/en/sql-reference/transactions#ddl
             # and https://docs.snowflake.com/en/sql-reference/sql-ddl-summary
             # TODO: include DESCRIBE, SHOW, USE in this list of DDL statements
-            if isinstance(transformed, (exp.Alter, exp.Comment, exp.Create, exp.Drop)) or transformed.args.get(
-                "create_stage_name"
+            if (
+                isinstance(transformed, (exp.Alter, exp.Comment, exp.Create, exp.Drop))
+                or transformed.args.get("create_stage_name")
+                or (
+                    transformed.args.get("task_statement")
+                    and statement_type.statement_type_id(transformed) == statement_type.DDL
+                )
             ):
                 self._duck_conn.commit()
                 self._conn._in_transaction = False

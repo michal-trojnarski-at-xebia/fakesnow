@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING
 
 import duckdb
 from duckdb import DuckDBPyConnection
 from sqlglot import Expr, exp
 
-from fakesnow.tasks.catalog import TaskCatalog, _table
+from fakesnow.tasks.catalog import TaskCatalog
 from fakesnow.tasks.statements import CreateTask, DropTask, TaskStatement, parse_task_statement
 from fakesnow.transforms.transforms import SUCCESS_NOP
 
 if TYPE_CHECKING:
     from fakesnow.conn import FakeSnowflakeConnection
+
+
+_COMMANDS: dict[type, str] = {CreateTask: "CREATE TASK", DropTask: "DROP TASK"}
 
 
 def task_statement(expression: Expr) -> Expr:
@@ -32,6 +36,7 @@ def execute(statement: TaskStatement, conn: FakeSnowflakeConnection) -> str:
         conn.database if conn.database_set else None,
         conn.schema if conn.schema_set else None,
         conn.role,
+        _COMMANDS[type(statement)],
     )
     if isinstance(statement, CreateTask):
         return catalog.create(statement)
@@ -42,9 +47,6 @@ def execute(statement: TaskStatement, conn: FakeSnowflakeConnection) -> str:
 
 def drop_schema(duck_conn: DuckDBPyConnection, database: str, schema: str) -> None:
     """Delete the tasks of a dropped schema."""
-    try:
-        with duck_conn.cursor() as conn:
-            conn.execute(f"delete from {_table(database)} where schema_name = ?", [schema])
-    except duckdb.CatalogException:
-        # a database that doesn't exist has no tasks
-        pass
+    # a database that doesn't exist has no tasks
+    with contextlib.suppress(duckdb.CatalogException):
+        TaskCatalog(duck_conn, database, schema, "", "DROP SCHEMA").delete_schema(database, schema)

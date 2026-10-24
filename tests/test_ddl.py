@@ -211,6 +211,17 @@ def test_add_column_to_shadowing_temporary_table_leaves_permanent_text_lengths(
     assert cur.fetchall() == [(20,)]
 
 
+def test_rename_to_name_of_temporary_table_in_other_schema(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create schema db1.other")
+    cur.execute("create temporary table db1.other.a (x int)")
+    cur.execute("use schema schema1")
+    cur.execute("create table b (x int)")
+    cur.execute("insert into b values (1)")
+    cur.execute("alter table b rename to a")
+    cur.execute("select x from db1.schema1.a")
+    assert cur.fetchall() == [(1,)]
+
+
 def test_swap_shadowing_temporary_tables_leaves_permanent_metadata(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create table a (c varchar(5)) comment = 'from a'")
     cur.execute("create table b (c varchar(20)) comment = 'from b'")

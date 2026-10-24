@@ -14,6 +14,8 @@ def parse(command: str) -> list[Expr | None]:
     try:
         return sqlglot.parse(command, read="snowflake")
     except ParseError as error:
+        if describe := _describe_task(command):
+            return [describe]
         raise syntax_error(error) from None
 
 
@@ -21,10 +23,16 @@ def parse_one(command: str) -> Expr:
     try:
         return sqlglot.parse_one(command, read="snowflake")
     except ParseError as error:
-        # sqlglot can't parse DESCRIBE TASK, so hand it on as a command like the other task statements
-        if match := _DESCRIBE_TASK.match(command):
-            return exp.Command(this="DESCRIBE", expression=exp.Literal.string(command[match.end() :].strip()))
+        if describe := _describe_task(command):
+            return describe
         raise syntax_error(error) from None
+
+
+def _describe_task(command: str) -> exp.Command | None:
+    """sqlglot can't parse DESCRIBE TASK, so hand it on as a command like the other task statements."""
+    if match := _DESCRIBE_TASK.match(command):
+        return exp.Command(this="DESCRIBE", expression=exp.Literal.string(command[match.end() :].strip()))
+    return None
 
 
 def syntax_error(error: ParseError) -> snowflake.connector.errors.ProgrammingError:

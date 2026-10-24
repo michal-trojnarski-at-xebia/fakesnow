@@ -71,6 +71,8 @@ def copy_into(
 
     schema = table.db or current_schema
     assert schema
+    # the stage and load history use the Snowflake name, the columns and rows are the temporary table's it may name
+    resolve_table(table, temporaries, current_database, current_schema)
 
     parquet_info = None
     if isinstance(cparams.file_format, ReadParquet):
@@ -93,8 +95,6 @@ def copy_into(
                 parquet_columns = {url: _get_parquet_column_names(url, duck_conn) for url in urls}
                 parquet_info = ParquetLoadInfo(parquet_columns, is_single_variant=True)
 
-    # the stage and load history use the Snowflake name, the rows go to the temporary table it may name
-    resolve_table(table, temporaries, current_database, current_schema)
     inserts = _inserts(expr, cparams, urls, parquet_info)
 
     histories: list[LoadHistoryRecord] = []
@@ -215,7 +215,8 @@ def _describe_table(
     """Get (column_name, data_type) pairs for a table via DESCRIBE."""
     catalog = table.catalog or current_database
     schema = table.db or current_schema
-    qualified_name = f"{catalog}.{schema}.{table.name}"
+    # an unqualified name resolves as DuckDB resolves it, to a temporary table before the current schema's
+    qualified_name = f"{catalog}.{schema}.{table.name}" if table.args.get("db") else table.sql(dialect="duckdb")
 
     result = duck_conn.execute(f"DESCRIBE {qualified_name}").fetchall()
     return [(row[0], row[1]) for row in result]

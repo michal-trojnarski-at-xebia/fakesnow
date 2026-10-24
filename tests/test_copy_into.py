@@ -925,6 +925,36 @@ def test_copy_parquet_match_by_column_name(dcur: snowflake.connector.cursor.Dict
     assert dcur.fetchall() == [{"A": 1, "B": 10}, {"A": 2, "B": 20}]
 
 
+def test_copy_parquet_match_by_column_name_into_qualified_temporary_table(
+    dcur: snowflake.connector.cursor.DictCursor, s3_client: S3Client
+) -> None:
+    dcur.execute("CREATE TABLE schema1.table1 (a INT)")
+    dcur.execute("CREATE TEMPORARY TABLE db1.schema1.table1 (a INT, b INT)")
+    parquet_data = pd.DataFrame({"a": [1], "b": [10]}).to_parquet()
+    bucket = upload_file(s3_client, parquet_data, key="data.parquet")
+    dcur.execute(
+        f"COPY INTO db1.schema1.table1 FROM 's3://{bucket}/' FILES=('data.parquet') "
+        "MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE FILE_FORMAT = (TYPE = 'PARQUET')"
+    )
+    dcur.execute("SELECT a, b FROM db1.schema1.table1")
+    assert dcur.fetchall() == [{"A": 1, "B": 10}]
+
+
+def test_copy_parquet_match_by_column_name_into_unqualified_temporary_table(
+    dcur: snowflake.connector.cursor.DictCursor, s3_client: S3Client
+) -> None:
+    dcur.execute("CREATE TABLE schema1.table1 (a INT)")
+    dcur.execute("CREATE TEMPORARY TABLE table1 (a INT, b INT)")
+    parquet_data = pd.DataFrame({"a": [1], "b": [10]}).to_parquet()
+    bucket = upload_file(s3_client, parquet_data, key="data.parquet")
+    dcur.execute(
+        f"COPY INTO table1 FROM 's3://{bucket}/' FILES=('data.parquet') "
+        "MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE FILE_FORMAT = (TYPE = 'PARQUET')"
+    )
+    dcur.execute("SELECT a, b FROM table1")
+    assert dcur.fetchall() == [{"A": 1, "B": 10}]
+
+
 def test_copy_parquet_schema_uses_literal_stage_path(dcur: snowflake.connector.cursor.DictCursor) -> None:
     dcur.execute("CREATE TABLE literal_parquet_target (a INT)")
     dcur.execute("CREATE STAGE literal_parquet_stage")

@@ -666,6 +666,8 @@ select
     'N' as is_iceberg
 from information_schema.tables
 where not (table_schema == '_fs_information_schema')
+-- fakesnow's own temporary tables, eg: the session's temporary load history
+and not (table_catalog = 'temp' and starts_with(table_name, '_fs_'))
 """
 
 # see https://docs.snowflake.com/en/sql-reference/sql/show-tables
@@ -700,6 +702,8 @@ select
     'N' as is_immutable
 from information_schema.tables
 where not (table_schema == '_fs_information_schema')
+-- fakesnow's own temporary tables, eg: the session's temporary load history
+and not (table_catalog = 'temp' and starts_with(table_name, '_fs_'))
 and table_type = 'BASE TABLE'
 """
 

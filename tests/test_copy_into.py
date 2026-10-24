@@ -1450,6 +1450,20 @@ def test_copy_into_temporary_table_skips_file_it_loaded(
     assert dcur.fetchall()[0]["status"] == "LOAD_SKIPPED"
 
 
+def test_copy_into_temporary_table_reloads_rolled_back_file(
+    dcur: snowflake.connector.cursor.DictCursor, s3_client: S3Client
+) -> None:
+    dcur.execute("CREATE TEMPORARY TABLE table1 (a INT, b INT)")
+    bucket = str(uuid.uuid4())
+    upload_file(s3_client, "1,2", bucket=bucket, key="foo.csv")
+    sql = f"COPY INTO table1 FROM 's3://{bucket}/' FILES=('foo.csv')"
+    dcur.execute("BEGIN")
+    dcur.execute(sql)
+    dcur.execute("ROLLBACK")
+    dcur.execute(sql)
+    assert dcur.fetchall()[0]["status"] == "LOADED"
+
+
 def test_params_csv_default():
     # Snowflake defaults are
     # TYPE='CSV' SKIP_HEADER = 0 FIELD_OPTIONALLY_ENCLOSED_BY = NONE FIELD_DELIMITER = ',' NULL_IF = '\N' COMPRESSION = 'AUTO'

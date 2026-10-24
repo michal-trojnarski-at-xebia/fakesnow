@@ -3,9 +3,13 @@ from __future__ import annotations
 from duckdb import DuckDBPyConnection
 from sqlglot import Expr, exp
 
+# Files COPY has loaded into each temporary table, by table OID. A temporary table, so the history is session-local
+# and DuckDB's transactions cover it: rolling back a COPY rolls back its history with its rows.
+_LOAD_HISTORY = "_fs_temporary_load_history"
+
 # Live temporary tables and views in the session, as (name, oid, kind). DuckDB lists its system views as temporary too.
-_LIVE_SQL = """
-    SELECT table_name, table_oid, 'TABLE' FROM duckdb_tables() WHERE temporary
+_LIVE_SQL = f"""
+    SELECT table_name, table_oid, 'TABLE' FROM duckdb_tables() WHERE temporary AND table_name != '{_LOAD_HISTORY}'
     UNION ALL
     SELECT view_name, view_oid, 'VIEW' FROM duckdb_views() WHERE temporary AND database_name = 'temp'
 """
@@ -23,8 +27,8 @@ class TemporaryObjects:
         self._duck_conn = duck_conn
         # Temporary object OID -> (catalog, schema) it was created in.
         self._owners: dict[int, tuple[str | None, str | None]] = {}
-        # Temporary table OID -> files COPY has loaded into it, kept apart from any permanent table's history.
-        self._loaded_files: dict[int, set[str]] = {}
+        # Kept apart from any permanent table's history, which is keyed by name.
+        duck_conn.execute(f"CREATE TEMPORARY TABLE IF NOT EXISTS {_LOAD_HISTORY} (table_oid BIGINT, file_name VARCHAR)")
 
     def record(self, expression: Expr, catalog: str | None, schema: str | None) -> None:
         """Register a temporary table or view just created by expression in catalog.schema."""
@@ -40,7 +44,8 @@ class TemporaryObjects:
         # Forget dropped objects here rather than tracking DROP, so the registry is bounded by live objects.
         live_oids = set(live.values())
         self._owners = {oid: owner for oid, owner in self._owners.items() if oid in live_oids}
-        self._loaded_files = {oid: files for oid, files in self._loaded_files.items() if oid in live_oids}
+        sql = f"DELETE FROM temp.main.{_LOAD_HISTORY} WHERE NOT list_contains(?, table_oid)"
+        self._duck_conn.execute(sql, [list(live_oids)])
         # CREATE TEMP TABLE IF NOT EXISTS succeeds without creating anything when the name is already taken, so the
         # OID may already be registered. Keep the schema it was created in.
         self._owners.setdefault(live[table.name], (catalog, schema))
@@ -55,15 +60,15 @@ class TemporaryObjects:
         found = self._find(name)
         return found[1] if found and found[0] == (catalog, schema) else None
 
-    def loaded_files(self, name: str, catalog: str, schema: str) -> set[str] | None:
+    def loaded_files(self, name: str, catalog: str, schema: str) -> LoadedFiles | None:
         """The files COPY has loaded into the live temporary table called name created in catalog.schema, or None.
 
-        The set is the table's load history: COPY adds to it, and it goes when the table is dropped.
+        This is the table's load history: COPY adds to it, and it goes when the table is dropped.
         """
         found = self._find_oid(name)
         if not found or found[1] != (catalog, schema):
             return None
-        return self._loaded_files.setdefault(found[0], set())
+        return LoadedFiles(self._duck_conn, found[0])
 
     def _find(self, name: str) -> tuple[tuple[str | None, str | None], str] | None:
         found = self._find_oid(name)
@@ -77,3 +82,18 @@ class TemporaryObjects:
         if not live or (owner := self._owners.get(live[0])) is None:
             return None
         return live[0], owner, live[1]
+
+
+class LoadedFiles:
+    """The files COPY has loaded into one temporary table, held in the session's temporary load history."""
+
+    def __init__(self, duck_conn: DuckDBPyConnection, table_oid: int):
+        self._duck_conn = duck_conn
+        self._table_oid = table_oid
+
+    def __contains__(self, file: str) -> bool:
+        sql = f"SELECT 1 FROM temp.main.{_LOAD_HISTORY} WHERE table_oid = ? AND file_name = ?"
+        return self._duck_conn.execute(sql, [self._table_oid, file]).fetchone() is not None
+
+    def add(self, file: str) -> None:
+        self._duck_conn.execute(f"INSERT INTO temp.main.{_LOAD_HISTORY} VALUES (?, ?)", [self._table_oid, file])

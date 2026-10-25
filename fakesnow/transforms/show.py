@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 import snowflake.connector.errors
@@ -329,6 +330,11 @@ WHERE 0 = 1;
 """
 
 
+def _quoted(name: str) -> str:
+    """The name as Snowflake writes it in a qualified name: quoted unless it's an upper case identifier."""
+    return name if re.fullmatch(r"[A-Z_][A-Z0-9_$]*", name) else '"{}"'.format(name.replace('"', '""'))
+
+
 def show_grants(
     expression: Expr,
     current_database: str | None,
@@ -412,7 +418,7 @@ def show_grants(
         raise snowflake.connector.errors.ProgrammingError(
             msg=f"SQL compilation error:\n{label} '{fqname}' does not exist or not authorized.",
             errno=2003,
-            sqlstate="02000",
+            sqlstate="42S02",
         )
 
     # a temporary object shadows a permanent one of the same name, and lives in the session's temp catalog
@@ -425,11 +431,12 @@ def show_grants(
             now()::timestamptz AS created_on,
             'OWNERSHIP' AS privilege,
             '{kind}' AS granted_on,
-            {exp.Literal.string(".".join(names)).sql(dialect="duckdb")} AS name,
+            {exp.Literal.string(".".join(map(_quoted, names))).sql(dialect="duckdb")} AS name,
             'ROLE' AS granted_to,
             {exp.Literal.string(owner).sql(dialect="duckdb")} AS grantee_name,
             'true' AS grant_option,
-            {exp.Literal.string(owner).sql(dialect="duckdb")} AS granted_by
+            {exp.Literal.string(owner).sql(dialect="duckdb")} AS granted_by,
+            'ROLE' AS granted_by_role_type
     """
     return sqlglot.parse_one(query, read="duckdb")
 

@@ -988,6 +988,7 @@ def test_server_current_role_from_login(server: dict) -> None:
 
 
 def test_server_current_warehouse_from_login(server: dict) -> None:
+    # assumes the warehouse exists, as test_current_warehouse_from_connect
     with snowflake.connector.connect(**server, warehouse="wh") as conn:
         cur = conn.cursor()
         cur.execute("select current_warehouse()")

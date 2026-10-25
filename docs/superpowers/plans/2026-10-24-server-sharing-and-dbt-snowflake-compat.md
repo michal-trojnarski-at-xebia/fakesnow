@@ -711,3 +711,26 @@ Expected: all PASS, with no new pyright errors.
 git add pyproject.toml uv.lock Makefile-common.mk tests/dbt_project tests/test_dbt.py README.md
 git commit -m "test: run a dbt project end to end against fakesnow in patch and server mode"
 ```
+
+## Live checks
+
+Verified with `snowflake-check` on 2026-10-25 (Snowflake 10.38), and fakesnow corrected to match:
+
+- SHOW GRANTS ON returns a ninth column, `granted_by_role_type` (`'ROLE'`). A name part that isn't an upper case
+  identifier is quoted, eg: `DB1."Mixed".T1`. A missing object's sqlstate is `42S02`. Snowflake's `created_on` is
+  TIMESTAMP_LTZ, which fakesnow can't describe (it reports TIMESTAMP_TZ, as for other LTZ columns).
+- GRANT on one object and FUTURE grants return `Statement executed successfully.`; GRANT ... ON ALL returns
+  `Statement executed successfully. <n> objects affected.` with the objects it covers, and REVOKE the grants it removed,
+  which fakesnow reports as 0 as it doesn't record grants.
+- `SYSTEM$CANCEL_ALL_QUERIES(<own session id>)` returns `0 cancelled.`, another session's id `invalid session id`.
+- `ALTER TABLE a SWAP WITH a` succeeds and changes nothing. Swapping a temporary table with a permanent one fails with
+  `001486 (42601): Swapping of a temporary table with another non-temporary table is not allowed.`, with a view with
+  `002203 (02000): SQL compilation error: Object found is of type 'VIEW', not specified type 'TABLE'.`
+- COMMENT ON returns `Statement executed successfully.`
+- The temporary-table status rows and the QUERY_TAG parameter row are as fakesnow returns them.
+
+Not modelled: warehouses and roles that don't exist. Snowflake rejects `USE WAREHOUSE` of a missing warehouse
+(002043), leaves the current warehouse NULL when connecting with one, and rejects grants to a missing role; fakesnow
+treats every warehouse and role as existing, so the tests use names that exist in a new account, eg: `COMPUTE_WH`,
+`PUBLIC`. Snowflake also lists temporary tables in `information_schema.tables`, and returns
+`<name> already exists, statement succeeded.` for CREATE TABLE IF NOT EXISTS of an existing table; fakesnow doesn't.

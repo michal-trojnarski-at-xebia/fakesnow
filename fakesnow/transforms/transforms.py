@@ -10,6 +10,7 @@ import sqlglot
 from duckdb import DuckDBPyConnection
 from sqlglot import Expr, exp
 
+from fakesnow.expr import normalise_ident
 from fakesnow.params import MutableParams, pop_qmark_param
 from fakesnow.variables import Variables
 
@@ -204,19 +205,23 @@ def session_context(expression: Expr, role: str, warehouse: str | None) -> Expr:
     return expression
 
 
-def system_cancel_all_queries(expression: Expr) -> Expr:
+def system_cancel_all_queries(expression: Expr, session_id: int) -> Expr:
     """Accept SYSTEM$CANCEL_ALL_QUERIES, which dbt runs on interrupt. Queries run synchronously, so none are running.
 
     Example:
         >>> import sqlglot
         >>> sqlglot.parse_one("SELECT SYSTEM$CANCEL_ALL_QUERIES(1234)", read="snowflake").transform(
-        ...     system_cancel_all_queries
+        ...     lambda e: system_cancel_all_queries(e, 1234)
         ... ).sql()
-        "SELECT '0 queries cancelled.'"
+        "SELECT '0 cancelled.'"
     """
 
     if isinstance(expression, exp.Anonymous) and str(expression.this).upper() == "SYSTEM$CANCEL_ALL_QUERIES":
-        return exp.Literal.string("0 queries cancelled.")
+        arg = expression.expressions[0] if expression.expressions else None
+        if not (isinstance(arg, exp.Literal) and not arg.is_string):
+            return exp.Literal.string("invalid argument")
+        # only the session's own queries can be cancelled, and none are running
+        return exp.Literal.string("0 cancelled." if arg.this == str(session_id) else "invalid session id")
 
     return expression
 
@@ -641,20 +646,50 @@ def hex_string(expression: Expr) -> Expr:
     return expression
 
 
-def grant_revoke(expression: Expr) -> Expr:
+_ON_ALL = re.compile(r"\bON\s+ALL\s+(\w+)\s+IN\s+(SCHEMA|DATABASE)\s+(.+?)\s+(?:TO|FROM)\s", re.IGNORECASE)
+_ALL_KINDS = {"TABLES": "BASE TABLE", "VIEWS": "VIEW"}
+
+
+def grant_revoke(
+    expression: Expr, duck_conn: DuckDBPyConnection, current_database: str | None, current_schema: str | None
+) -> Expr:
     """Accept GRANT and REVOKE as no-ops, since privileges aren't enforced.
+
+    As Snowflake does, GRANT ... ON ALL reports the objects it covers, and REVOKE the grants it removes, which is
+    none as grants aren't recorded.
 
     See https://docs.snowflake.com/en/sql-reference/sql/grant-privilege
     """
     # sqlglot parses forms it doesn't support (eg: ALL/FUTURE, role grants, shares) as a Command
-    if isinstance(expression, (exp.Grant, exp.Revoke)) or (
-        isinstance(expression, exp.Command)
-        and isinstance(expression.this, str)
-        and expression.this.upper() in ("GRANT", "REVOKE")
+    if not (
+        isinstance(expression, (exp.Grant, exp.Revoke))
+        or (
+            isinstance(expression, exp.Command)
+            and isinstance(expression.this, str)
+            and expression.this.upper() in ("GRANT", "REVOKE")
+        )
     ):
-        return SUCCESS_NOP.copy()
+        return expression
 
-    return expression
+    text = expression.sql(dialect="snowflake")
+    revoke = isinstance(expression, exp.Revoke) or text.upper().startswith("REVOKE")
+    on_all = _ON_ALL.search(text)
+    if not (revoke and " FUTURE " not in text.upper()) and not on_all:
+        return SUCCESS_NOP.copy()
+    count = 0
+    if on_all and not revoke and (table_type := _ALL_KINDS.get(on_all.group(1).upper())):
+        parts = [normalise_ident(p.sql(dialect="snowflake")) for p in exp.to_table(on_all.group(3)).parts]
+        if on_all.group(2).upper() == "SCHEMA":
+            database, schema = (parts[0], parts[1]) if len(parts) > 1 else (current_database, parts[0])
+        else:
+            database, schema = parts[0], None
+        (count,) = duck_conn.execute(
+            "SELECT count(*) FROM information_schema.tables WHERE table_catalog = ? AND table_type = ? "
+            "AND table_schema NOT IN ('information_schema', '_fs_information_schema') "
+            "AND (? IS NULL OR table_schema = ?)",
+            [database, table_type, schema, schema],
+        ).fetchone()  # type: ignore[misc]
+    return sqlglot.parse_one(f"SELECT 'Statement executed successfully. {count} objects affected.' AS status")
 
 
 def haversine(expression: Expr) -> Expr:

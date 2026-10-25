@@ -9,10 +9,10 @@ models:
   - name: orders_table
     config:
       grants:
-        select: ['REPORTER']
+        select: ['PUBLIC']
       query_tag: 'fsproj'
   # an incremental run checks existing grants to revoke stale ones, with show grants on <relation>
   - name: inc_merge
     config:
       grants:
-        select: ['REPORTER']
+        select: ['PUBLIC']

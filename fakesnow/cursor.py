@@ -319,7 +319,7 @@ class FakeSnowflakeCursor:
                 lambda e: transforms.session_context(e, self._conn.role, self._conn.warehouse),
                 copy=False,
             )
-            .transform(transforms.system_cancel_all_queries, copy=False)
+            .transform(lambda e: transforms.system_cancel_all_queries(e, self._conn.session_id), copy=False)
             .transform(transforms.set_schema, current_database=self._conn.database, copy=False)
             .transform(transforms.create_database, db_path=self._conn.db_path, copy=False)
             .transform(transforms.extract_comment_on_table, copy=False)
@@ -379,7 +379,10 @@ class FakeSnowflakeCursor:
                 ),
                 copy=False,
             )
-            .transform(transforms.grant_revoke, copy=False)
+            .transform(
+                lambda e: transforms.grant_revoke(e, self._duck_conn, self._conn.database, self._conn.schema),
+                copy=False,
+            )
             .transform(transforms.show_procedures, copy=False)
             .transform(lambda e: transforms.show_parameters(e, self._conn.query_tag), copy=False)
             .transform(transforms.show_warehouses, copy=False)
@@ -440,7 +443,7 @@ class FakeSnowflakeCursor:
         swap_result = transforms.swap_table(
             expression, self._conn.database, self._conn.schema, self._duck_conn, self._conn.temporaries
         )
-        if len(swap_result) > 1:
+        if swap_result != [expression]:
             return swap_result
 
         # Return original expression if no transform applied
@@ -731,6 +734,9 @@ class FakeSnowflakeCursor:
             schema = table.db or self._conn.schema
             assert catalog and schema
             self._duck_conn.execute(info_schema.insert_table_comment_sql(catalog, schema, table.name, comment))
+        if table_comment and isinstance(transformed, exp.Select):
+            # COMMENT ON, or ALTER ... SET COMMENT, replaced by a no-op, reports success whether or not it was recorded
+            result_sql = SQL_SUCCESS
 
         if transformed.args.get("swap_metadata") and isinstance(transformed, exp.Alter):
             # comments, text lengths and load history are keyed by table name, so they follow the tables. This is

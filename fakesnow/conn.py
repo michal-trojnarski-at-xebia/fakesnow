@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 from collections.abc import Iterable
 from pathlib import Path
 from types import TracebackType
@@ -53,6 +54,8 @@ class FakeSnowflakeConnection:
         # roles and warehouses have no duckdb equivalent, so they are only tracked for current_role() etc
         self.role: str = normalise_ident(kwargs.get("role") or "PUBLIC")
         self.warehouse: str | None = (w := kwargs.get("warehouse")) and normalise_ident(w)
+        # as the connector's, eg: for SYSTEM$CANCEL_ALL_QUERIES(<session id>)
+        self.session_id: int = secrets.randbelow(10**10)
 
         self.database_set = False
         self.schema_set = False

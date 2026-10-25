@@ -109,10 +109,8 @@ def swap_table(
     if location(first) != location(second):
         raise NotImplementedError("ALTER TABLE ... SWAP WITH across databases or schemas")
     if first.name.upper() == second.name.upper():
-        # duckdb names are case-insensitive, so renaming the table away would leave the next rename without a source
-        raise snowflake.connector.errors.ProgrammingError(
-            msg=f"SQL compilation error:\nCannot swap table '{first.name}' with itself.", errno=2003
-        )
+        # swapping a table with itself changes nothing. duckdb names are case-insensitive, so this is checked first.
+        return [SUCCESS_NOP.copy()]
     catalog, schema = location(first)
     temporary: list[bool] = []
     for operand in (first, second):
@@ -125,13 +123,16 @@ def swap_table(
         if kind and kind != "TABLE":
             # duckdb would rename a view as though it were a table
             raise snowflake.connector.errors.ProgrammingError(
-                msg=f"SQL compilation error:\nObject found is of type '{kind}', not specified type 'TABLE'.",
+                msg=f"SQL compilation error: Object found is of type '{kind}', not specified type 'TABLE'.",
                 errno=2203,
+                sqlstate="02000",
             )
     if temporary[0] != temporary[1]:
         # see https://docs.snowflake.com/en/sql-reference/sql/alter-table#parameters
         raise snowflake.connector.errors.ProgrammingError(
-            msg="SQL compilation error:\nCannot swap a temporary table with a permanent or transient table.", errno=2203
+            msg="Swapping of a temporary table with another non-temporary table is not allowed.",
+            errno=1486,
+            sqlstate="42601",
         )
 
     # rename to takes an unqualified name, and the new name must be in the same schema as the table

@@ -192,6 +192,19 @@ def test_temporary_table_not_visible_beside_cte_in_nested_scope(cur: snowflake.c
     assert cur.fetchall() == [(1,)]
 
 
+def test_comment_on_shadowing_temporary_table_status(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table t1 (a int)")
+    cur.execute("create temporary table t1 (a int)")
+    cur.execute("comment on table t1 is 'temporary'")
+    assert cur.fetchall() == [("Statement executed successfully.",)]
+
+
+def test_comment_on_table_status(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table t1 (a int)")
+    cur.execute("comment on table t1 is 'c'")
+    assert cur.fetchall() == [("Statement executed successfully.",)]
+
+
 def test_comment_on_shadowing_temporary_table_leaves_permanent_comment(
     cur: snowflake.connector.cursor.SnowflakeCursor,
 ):
@@ -396,11 +409,16 @@ def test_alter_table_swap_with_missing_table_leaves_tables_intact(
     assert cur.fetchall() == [(1,)]
 
 
+def test_alter_table_swap_with_itself_succeeds(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
+    cur.execute("create table a (x int)")
+    cur.execute("alter table a swap with schema1.a")
+    assert cur.fetchall() == [("Statement executed successfully.",)]
+
+
 def test_alter_table_swap_with_itself_leaves_table_intact(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
     cur.execute("create table a (x int)")
     cur.execute("insert into a values (1)")
-    with pytest.raises(snowflake.connector.errors.ProgrammingError):
-        cur.execute("alter table a swap with schema1.a")
+    cur.execute("alter table a swap with schema1.a")
     cur.execute("select x from a")
     assert cur.fetchall() == [(1,)]
 
@@ -409,7 +427,9 @@ def test_alter_table_swap_with_view(cur: snowflake.connector.cursor.SnowflakeCur
     cur.execute("create table a (x int)")
     cur.execute("create view b as select 1 as x")
     with pytest.raises(
-        snowflake.connector.errors.ProgrammingError, match="Object found is of type 'VIEW', not specified type 'TABLE'"
+        snowflake.connector.errors.ProgrammingError,
+        match=r"^002203 \(02000\): SQL compilation error: Object found is of type 'VIEW', not specified type "
+        r"'TABLE'\.$",
     ):
         cur.execute("alter table a swap with b")
 
@@ -427,7 +447,10 @@ def test_alter_table_swap_with_view_leaves_table_intact(cur: snowflake.connector
 def test_alter_table_swap_temporary_with_permanent(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
     cur.execute("create table b (x int)")
     cur.execute("create temporary table a (x int)")
-    with pytest.raises(snowflake.connector.errors.ProgrammingError):
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"^001486 \(42601\): Swapping of a temporary table with another non-temporary table is not allowed\.$",
+    ):
         cur.execute("alter table a swap with b")
 
 

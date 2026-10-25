@@ -348,6 +348,8 @@ def test_current_role_from_connect(_fakesnow: None):
 
 
 def test_current_warehouse_from_connect(_fakesnow: None):
+    # assumes the warehouse exists: Snowflake leaves the current warehouse NULL for one that doesn't, while fakesnow
+    # treats every warehouse as existing
     with snowflake.connector.connect(warehouse="wh") as conn:
         assert conn.cursor().execute("select current_warehouse()").fetchall() == [("WH",)]
 

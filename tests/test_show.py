@@ -762,6 +762,7 @@ def _ownership(granted_on: str, name: str, role: str = "PUBLIC") -> dict:
         "grantee_name": role,
         "grant_option": "true",
         "granted_by": role,
+        "granted_by_role_type": "ROLE",
     }
 
 
@@ -884,12 +885,14 @@ def test_show_grants_resolves_unqualified_name_in_quoted_schema(dcur: snowflake.
     dcur.execute('use schema db1."Mixed"')
     dcur.execute("create table t1 (id int)")
     dcur.execute("show grants on table t1")
-    assert dcur.fetchall() == [_ownership("TABLE", "DB1.Mixed.T1")]
+    # a name part that isn't an upper case identifier is quoted
+    assert dcur.fetchall() == [_ownership("TABLE", 'DB1."Mixed".T1')]
 
 
 def test_show_grants_on_missing_table(dcur: snowflake.connector.cursor.DictCursor):
-    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="does not exist or not authorized"):
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="does not exist or not authorized") as e:
         dcur.execute("show grants on table db1.schema1.nope")
+    assert (e.value.errno, e.value.sqlstate) == (2003, "42S02")
 
 
 @pytest.mark.xfail(reason="SHOW GRANTS TO ROLE is not implemented", strict=True)

@@ -17,9 +17,6 @@ from snowflake.connector.errors import ProgrammingError
 import fakesnow
 from tests.utils import dindent, indent
 
-# provisional: pending confirmation against live Snowflake
-CANCEL_ALL_QUERIES_RESULT = "0 queries cancelled."
-
 
 def test_alias_on_join(conn: snowflake.connector.SnowflakeConnection):
     *_, cur = conn.execute_string(
@@ -781,10 +778,18 @@ def test_use_role_changes_current_role(cur: snowflake.connector.cursor.Snowflake
 
 
 def test_use_warehouse_changes_current_warehouse(cur: snowflake.connector.cursor.SnowflakeCursor):
+    # assumes COMPUTE_WH exists, as it does in a new Snowflake account. fakesnow treats every warehouse as existing.
     cur.execute("use warehouse compute_wh")
     assert cur.execute("select current_warehouse()").fetchall() == [("COMPUTE_WH",)]
 
 
-def test_system_cancel_all_queries(cur: snowflake.connector.cursor.SnowflakeCursor):
+def test_system_cancel_all_queries(conn: snowflake.connector.SnowflakeConnection):
+    # as dbt calls it, with the session's own id, when it's interrupted
+    with conn.cursor() as cur:
+        cur.execute(f"select system$cancel_all_queries({conn.session_id})")
+        assert cur.fetchall() == [("0 cancelled.",)]
+
+
+def test_system_cancel_all_queries_of_another_session(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("select system$cancel_all_queries(1234)")
-    assert cur.fetchall() == [(CANCEL_ALL_QUERIES_RESULT,)]
+    assert cur.fetchall() == [("invalid session id",)]

@@ -522,7 +522,9 @@ corrected to match. What fakesnow now does, as Snowflake does:
 4. Graph shape is checked by EXECUTE TASK, not the DDL: predecessors in different graphs, a cycle, a join split by
    REMOVE AFTER or DROP, and SET FINALIZE on a root that has a finalizer are all accepted. EXECUTE TASK then fails with
    091419 (unreachable task), in a cycle through the root, 091435 (non-root task), or, in a cycle among the root's
-   descendants, 091445 ("Graph has at least one cycle containing task A.") without running any task. CREATE OR REPLACE of a started root with dependents
+   descendants, 091445 ("Graph has at least one cycle containing task A.") without running any task. A task can't be
+   its own predecessor: ADD AFTER itself, or CREATE OR REPLACE of an existing task AFTER itself, fails with 091402
+   (22000). CREATE OR REPLACE of a started root with dependents
    and CREATE OR ALTER of a started standalone task are accepted, the latter keeping its state.
 5. A task runs once all its resumed predecessors succeeded, and needs at least one: suspended predecessors are ignored,
    so a task after only suspended ones, eg: a dependent of a suspended child, doesn't run. Tasks run in waves, children

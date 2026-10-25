@@ -31,6 +31,7 @@ INVALID_ENABLE_ARGUMENT = "SQL compilation error:\ninvalid value [{argument}] fo
 
 STARTED_ROOT = "Unable to update graph with root task {root} since that root task is not suspended."
 INVALID_PREDECESSOR = "Invalid predecessor {name} was specified."
+SELF_PREDECESSOR = "Task {name} cannot use itself as its predecessor."
 OTHER_SCHEMA_PREDECESSOR = "Cannot have predecessor {name} from a different schema."
 SCHEDULED_CHILD = "Task {name} cannot have both a schedule and a predecessor."
 NOT_A_PREDECESSOR = "Task {name} does not have predecessor {predecessor}."
@@ -436,6 +437,8 @@ class TaskCatalog:
             pred = self.get(pred_db, pred_schema, pred_name)
             if pred is None:
                 raise _error(INVALID_PREDECESSOR.format(name=pred_name), 91085, "42601")
+            if (pred.database, pred.schema_name, pred.name) == (task.database, task.schema_name, task.name):
+                raise _error(SELF_PREDECESSOR.format(name=task.name), 91402, "22000")
             if (pred.database, pred.schema_name) != (task.database, task.schema_name):
                 raise _error(OTHER_SCHEMA_PREDECESSOR.format(name=pred.name), 91413, "42601")
             if pred.finalize:

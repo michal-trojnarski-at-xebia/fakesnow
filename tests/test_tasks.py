@@ -426,6 +426,14 @@ def test_create_task_cycle_is_accepted(cur: snowflake.connector.cursor.Snowflake
     assert cur.fetchall() == [("Task ROOT successfully created.",)]
 
 
+def test_create_or_replace_task_after_itself_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError, match=r"Task ROOT cannot use itself as its predecessor\."
+    ):
+        cur.execute("create or replace task root after root as select 1")
+
+
 def test_create_task_too_many_predecessors_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     # three middle tasks keep every task within the child limit, in a single graph
@@ -874,6 +882,28 @@ def test_alter_task_add_after_cycle_is_accepted(cur: snowflake.connector.cursor.
     cur.execute("create task child after root as select 1")
     cur.execute("alter task root add after child")
     assert cur.fetchall() == [("Statement executed successfully.",)]
+
+
+def test_alter_task_add_after_itself_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError, match=r"Task ROOT cannot use itself as its predecessor\."
+    ):
+        cur.execute("alter task root add after root")
+
+
+def test_alter_task_add_after_itself_error_code(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    with pytest.raises(snowflake.connector.errors.ProgrammingError) as e:
+        cur.execute("alter task root add after root")
+    assert (e.value.errno, e.value.sqlstate) == (91402, "22000")
+
+
+def test_alter_task_add_after_itself_keeps_predecessors(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    with pytest.raises(snowflake.connector.errors.ProgrammingError):
+        cur.execute("alter task root add after root")
+    assert indent(_show(cur, "predecessors", "root")) == [("[]",)]
 
 
 def test_alter_task_add_after_to_scheduled_task_raises(cur: snowflake.connector.cursor.SnowflakeCursor):

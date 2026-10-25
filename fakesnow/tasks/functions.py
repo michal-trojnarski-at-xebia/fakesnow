@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -27,6 +27,8 @@ class TaskRunContext:
     run_id: int
     config: str | None
     predecessor_return_values: dict[str, str | None]
+    # every ancestor's, as a named lookup falls back to a matching ancestor
+    ancestor_return_values: dict[str, str | None] = field(default_factory=dict)
     return_value: str | None = None
 
 
@@ -101,7 +103,8 @@ def _read(function: str, args: list[Expr], context: TaskRunContext) -> str | Non
     values = context.predecessor_return_values
     if arg is None:
         return next(iter(values.values())) if len(values) == 1 else None  # ambiguous with several
-    return values.get(parse_task_name(arg).name)
+    name = parse_task_name(arg).name
+    return values[name] if name in values else context.ancestor_return_values.get(name)
 
 
 def _runtime_info(field: str | None, context: TaskRunContext) -> str | None:

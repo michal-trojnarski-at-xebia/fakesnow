@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -40,7 +41,24 @@ def run_graph(conn: FakeSnowflakeConnection, catalog: TaskCatalog, root: Task, c
     # rollback by the caller can't undo the run. without an active transaction this is a no-op.
     conn._duck_conn.commit()  # noqa: SLF001
     conn._in_transaction = False  # noqa: SLF001
-    _GraphRun(conn, catalog, root, root.config if config_override is None else config_override).run()
+    _GraphRun(conn, catalog, root, _merged_config(root.config, config_override)).run()
+
+
+def _merged_config(default: str | None, override: str | None) -> str | None:
+    """The config of a run: the USING CONFIG override merged into the root's config, object by object, with the
+    override's values winning. An override that can't be merged replaces the config."""
+    if default is None or override is None:
+        return default if override is None else override
+    try:
+        return json.dumps(_merge(json.loads(default), json.loads(override)))
+    except ValueError:
+        return override
+
+
+def _merge(default: object, override: object) -> object:
+    if isinstance(default, dict) and isinstance(override, dict):
+        return default | {key: _merge(default.get(key), value) for key, value in override.items()}
+    return override
 
 
 class _GraphRun:
@@ -58,7 +76,8 @@ class _GraphRun:
         self.first_error: tuple[str, int, str] | None = None
 
     def run(self) -> None:
-        for task in self.catalog.graph(self.root):
+        self.graph = self.catalog.graph(self.root)
+        for task in self.graph:
             if task.finalize:
                 # the finalizer comes last, and runs whatever happened to the rest unless the root was skipped
                 if self.states[self.root.name] != SKIPPED and task.state != SUSPENDED:
@@ -78,6 +97,17 @@ class _GraphRun:
         self._record_graph_run()
         self.catalog.mark_committed(self.root)
 
+    def _ancestors(self, task: Task) -> set[str]:
+        tasks = {t.name: t for t in self.graph}
+        ancestors: set[str] = set()
+        pending = list(task.predecessors)
+        while pending:
+            name = pending.pop()
+            if name not in ancestors:
+                ancestors.add(name)
+                pending.extend(tasks[name].predecessors if name in tasks else [])
+        return ancestors
+
     def _run_task(self, task: Task) -> None:
         scheduled_time = self.scheduled_time if task.name == self.root.name else now()
         context = TaskRunContext(
@@ -87,6 +117,7 @@ class _GraphRun:
             run_id=self.run_id,
             config=self.config,
             predecessor_return_values={p: self.return_values.get(p) for p in task.predecessors},
+            ancestor_return_values={a: self.return_values.get(a) for a in self._ancestors(task)},
         )
         session = self.conn.open_session(task.database, task.schema_name, task.owner, task.session_parameters)
         query_id = error_code = error_message = query_start_time = None

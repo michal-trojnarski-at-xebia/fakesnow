@@ -1496,10 +1496,22 @@ def test_execute_task_history_root_task_id_shared(cur: snowflake.connector.curso
     assert cur.fetchall() == [(1,)]
 
 
-def test_execute_task_using_config_replaces_config(cur: snowflake.connector.cursor.SnowflakeCursor):
+def test_execute_task_using_config_merges_config(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("""create task t1 config = '{"a": 1}' as select 1""")
     cur.execute("""execute task t1 using config = '{"b": 2}'""")
-    assert _history(cur, "config") == [('{"b": 2}',)]
+    assert _history(cur, "config") == [('{"a": 1, "b": 2}',)]
+
+
+def test_execute_task_using_config_overrides_matching_field(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("""create task t1 config = '{"a": 1}' as select 1""")
+    cur.execute("""execute task t1 using config = '{"a": 2}'""")
+    assert _history(cur, "config") == [('{"a": 2}',)]
+
+
+def test_execute_task_using_config_merges_nested_fields(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("""create task t1 config = '{"env": "prod", "paths": {"logs": "l", "results": "r"}}' as select 1""")
+    cur.execute("""execute task t1 using config = '{"paths": {"results": "t"}}'""")
+    assert _history(cur, "config") == [('{"env": "prod", "paths": {"logs": "l", "results": "t"}}',)]
 
 
 def test_execute_task_history_records_root_config(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -1679,6 +1691,16 @@ def test_predecessor_return_value_in_child(cur: snowflake.connector.cursor.Snowf
     assert cur.fetchall() == [("from root",)]
 
 
+def test_predecessor_return_value_from_ancestor(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _create_root_returning_value(cur)
+    cur.execute("create task mid after root as select 1")
+    cur.execute("create task leaf after mid as insert into seen select system$get_predecessor_return_value('root')")
+    cur.execute("select system$task_dependents_enable('root')")
+    cur.execute("execute task root")
+    cur.execute("select v from seen")
+    assert cur.fetchall() == [("from root",)]
+
+
 def test_set_return_value_passes_on_predecessor_value_with_suffix(cur: snowflake.connector.cursor.SnowflakeCursor):
     _create_root_returning_value(cur)
     cur.execute(
@@ -1769,7 +1791,7 @@ def test_get_task_graph_config_using_config(cur: snowflake.connector.cursor.Snow
     cur.execute("""create task t1 config = '{"a": 1}' as insert into seen select system$get_task_graph_config()""")
     cur.execute("""execute task t1 using config = '{"b": 2}'""")
     cur.execute("select v from seen")
-    assert cur.fetchall() == [('{"b": 2}',)]
+    assert cur.fetchall() == [('{"a": 1, "b": 2}',)]
 
 
 def test_current_user_task_name(cur: snowflake.connector.cursor.SnowflakeCursor):

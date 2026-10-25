@@ -524,7 +524,8 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
 7. `SYSTEM$TASK_DEPENDENTS_ENABLE` and `SYSTEM$SET_RETURN_VALUE` return values (fakesnow: `SET_RETURN_VALUE` returns its
    argument inside a task and NULL outside).
 8. Whether resuming a standalone task without a SCHEDULE is allowed.
-9. Whether `EXECUTE TASK ... USING CONFIG` replaces the root's CONFIG or merges into it.
+9. `EXECUTE TASK ... USING CONFIG` merges into the root's CONFIG object by object, as the docs say; the rendering of
+   the merged config in TASK_HISTORY (fakesnow: `json.dumps`, eg: `{"a": 1, "b": 2}`).
 10. ALTER TASK: `last_suspended_reason` `USER_SUSPENDED` after `ALTER TASK ... SUSPEND`; the SYSTEM$TASK_DEPENDENTS_ENABLE
     result column name (`SYSTEM$TASK_DEPENDENTS_ENABLE('<arg as written>')`) and whether it also resumes the root's
     finalizer; `ADD AFTER` on a task that has a schedule (currently `SCHEDULED_CHILD`) or that already has children

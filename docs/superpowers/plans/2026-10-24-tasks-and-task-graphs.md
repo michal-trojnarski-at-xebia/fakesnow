@@ -38,8 +38,8 @@ same `FakeSnow` instance.
 
 1. A task body that fails (bad SQL, missing table) — `EXECUTE TASK` still succeeds, history row `FAILED` with the
    error, dependents don't run, finalizer runs. Test in Task 6.
-2. The caller has an open transaction when it runs `EXECUTE TASK` — the caller's writes are committed first and the
-   task session sees them; a later caller `ROLLBACK` doesn't erase task history. Test in Task 6.
+2. The caller has an open transaction when it runs `EXECUTE TASK` — it stays open and uncommitted, the task session
+   doesn't see its writes, and a later caller `ROLLBACK` doesn't erase task history (see Live checks 1). Test in Task 6.
 3. Quoted, mixed-case task names (`"My Task"`) through CREATE, AFTER, SHOW and EXECUTE. Test in Task 2 and Task 6.
 4. Tasks in a database opened from `db_path` survive reconnecting to a new `FakeSnow` on the same path. Test in Task 2.
 5. Two schemas each with a task of the same name — SHOW scoping and AFTER resolution keep them apart. Test in Task 5.

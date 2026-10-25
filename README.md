@@ -377,7 +377,7 @@ For more detail see the [test suite](tests/).
 
 Tasks and task graphs are supported: `CREATE [OR REPLACE | OR ALTER] TASK` (including `CLONE`), `ALTER TASK`, `DROP TASK`, `SHOW [TERSE] TASKS`, `DESCRIBE TASK`, `SYSTEM$TASK_DEPENDENTS_ENABLE`, the `SYSTEM$` task functions (such as `SYSTEM$SET_RETURN_VALUE` and `SYSTEM$GET_PREDECESSOR_RETURN_VALUE`) and the `TASK_HISTORY`, `COMPLETE_TASK_GRAPHS` and `TASK_DEPENDENTS` table functions in `INFORMATION_SCHEMA`. Snowflake's graph rules (suspended root, predecessors, finalizers, cycles and limits) are enforced.
 
-`EXECUTE TASK` (optionally `USING CONFIG`) is synchronous: it returns after the whole graph, finalizer included, has run. Each task runs in its own session, and a failing task is recorded in the task history rather than raising. If a transaction is open it is committed first.
+`EXECUTE TASK` (optionally `USING CONFIG`) is synchronous: it returns after the whole graph, finalizer included, has run. Each task runs in its own session, and a failing task is recorded in the task history rather than raising. It doesn't commit an open transaction, and the tasks don't see its uncommitted writes, so commit first if the tasks need to read them. `ALTER TASK` and `DROP TASK` commit an open transaction, as in Snowflake.
 
 Not supported:
 

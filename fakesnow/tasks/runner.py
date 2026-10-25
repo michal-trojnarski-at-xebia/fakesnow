@@ -84,11 +84,12 @@ class _GraphRun:
                     self._run_task(task)
             elif task.name == self.root.name:
                 self._run_task(task)
+            elif task.state == SUSPENDED:
+                # a suspended child is skipped without a history row, whatever happened to its predecessors, and its
+                # dependents run as if it succeeded
+                self.states[task.name] = _SUSPENDED
             elif any(self._state_of(task, p) not in (SUCCEEDED, _SUSPENDED) for p in task.predecessors):
                 self.states[task.name] = _NOT_RUN
-            elif task.state == SUSPENDED:
-                # a suspended child is skipped without a history row, and its dependents run as if it succeeded
-                self.states[task.name] = _SUSPENDED
             elif len(task.predecessors) > 1 and all(self._state_of(task, p) == _SUSPENDED for p in task.predecessors):
                 # a task with several predecessors needs at least one of them resumed
                 self.states[task.name] = _NOT_RUN

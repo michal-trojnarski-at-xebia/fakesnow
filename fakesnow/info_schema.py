@@ -409,7 +409,9 @@ def fs_global_creation_sql() -> str:
         {SQL_CREATE_GLOBAL_INFORMATION_SCHEMA_COLUMNS_VIEW};
         {SQL_CREATE_GLOBAL_INFORMATION_SCHEMA_USERS_TABLE};
         {SQL_CREATE_GLOBAL_INFORMATION_SCHEMA_STAGES_TABLE};
-        {SQL_CREATE_GLOBAL_INFORMATION_SCHEMA_FILE_FORMATS_TABLE}
+        {SQL_CREATE_GLOBAL_INFORMATION_SCHEMA_FILE_FORMATS_TABLE};
+        -- always empty, so an account-wide SHOW TASKS has a table to list when no database has one
+        {SQL_CREATE_TASKS_TABLE.substitute(catalog="_fs_global")}
     """
 
 

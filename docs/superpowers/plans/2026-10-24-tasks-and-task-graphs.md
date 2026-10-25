@@ -575,5 +575,6 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
     in two graphs; running one of them, fakesnow runs C only if every other resumed predecessor is in that run
     (a suspended one doesn't count). Compare with 24, where REMOVE AFTER is rejected instead.
 28. A suspended child is suspended whatever its predecessors' states, so a join (`D after ROOT, C`) ignores a suspended
-    C even when all of C's own predecessors are suspended. The docs don't say what a suspended child does when one of
-    its predecessors fails: fakesnow treats it as not run, so its dependents don't run either.
+    C even when all of C's own predecessors are suspended, or one of them failed. The docs don't say what a suspended
+    child does when one of its predecessors fails: fakesnow follows "the graph continues as though the child task had
+    succeeded", so a dependent of the suspended child still runs.

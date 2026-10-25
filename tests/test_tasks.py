@@ -1222,6 +1222,12 @@ def test_show_tasks_in_schema_without_current_schema_uses_current_database(_fake
         assert _show_names(cur, "show tasks in schema") == ["T1", "T2"]
 
 
+def test_show_tasks_in_account_without_databases_is_empty(_fakesnow: None):
+    with snowflake.connector.connect() as conn, conn.cursor() as cur:
+        cur.execute("show tasks in account")
+        assert cur.fetchall() == []
+
+
 def test_describe_task_row(dcur: snowflake.connector.cursor.DictCursor):
     dcur.execute("create task t1 schedule = '5 minute' comment = 'c' as select 1")
     dcur.execute("show tasks")
@@ -1405,6 +1411,19 @@ def test_execute_task_join_ignores_suspended_predecessor_whose_predecessors_are_
     _logging_task(cur, "b", "after root")
     _logging_task(cur, "c", "after a, b")
     _logging_task(cur, "d", "after root, c")
+    cur.execute("alter task d resume")
+    cur.execute("execute task root")
+    assert _log(cur) == ["root", "d"]
+
+
+def test_execute_task_join_ignores_suspended_predecessor_after_failure(
+    cur: snowflake.connector.cursor.SnowflakeCursor, log: None
+):
+    _logging_task(cur, "root")
+    cur.execute("create task a after root as select * from missing")
+    _logging_task(cur, "c", "after a")
+    _logging_task(cur, "d", "after root, c")
+    cur.execute("alter task a resume")
     cur.execute("alter task d resume")
     cur.execute("execute task root")
     assert _log(cur) == ["root", "d"]

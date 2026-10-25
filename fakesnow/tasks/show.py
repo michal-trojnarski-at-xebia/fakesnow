@@ -117,8 +117,6 @@ def show_tasks_sql(
             errno=2003,
             sqlstate="02000",
         )
-    if not databases:
-        raise checks.no_current_database_error("SHOW TASKS")
 
     filters = []
     if schema:

@@ -524,7 +524,8 @@ class TaskCatalog:
     def _new(self, database: str, schema: str, name: str, stmt: CreateTask) -> Task:
         if stmt.clone_of:
             source = self.require(stmt.clone_of)
-            # everything but the identity, state and run history is copied
+            # everything but the identity, state and run history is copied. a clone by another role than the owner
+            # can't have a predecessor.
             return replace(
                 source,
                 database=database,
@@ -533,6 +534,7 @@ class TaskCatalog:
                 id=str(uuid.uuid4()),
                 created_on=now(),
                 owner=self.role,
+                predecessors=source.predecessors if self.role == source.owner else [],
                 state=SUSPENDED,
                 last_committed_on=None,
                 last_suspended_on=None,

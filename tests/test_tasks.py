@@ -158,6 +158,22 @@ def test_create_task_clone_clears_last_column(cur: snowflake.connector.cursor.Sn
     assert _show(cur, column, "t2") == [(None,)]
 
 
+def test_create_task_clone_by_owner_keeps_predecessors(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    cur.execute("create task child after root as select 1")
+    cur.execute("create task copy clone child")
+    assert indent(_show(cur, "predecessors", "copy")) == [('[\n  "DB1.SCHEMA1.ROOT"\n]',)]
+
+
+def test_create_task_clone_by_other_role_has_no_predecessors(_fakesnow: None):
+    with snowflake.connector.connect(database="db1", schema="schema1", role="SYSADMIN") as conn, conn.cursor() as cur:
+        cur.execute("create task root as select 1")
+        cur.execute("create task child after root as select 1")
+    with snowflake.connector.connect(database="db1", schema="schema1", role="ANALYST") as conn, conn.cursor() as cur:
+        cur.execute("create task copy clone child")
+        assert _show(cur, "predecessors", "copy") == [("[]",)]
+
+
 def test_create_task_clone_missing_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
     with pytest.raises(snowflake.connector.errors.ProgrammingError, match=r"Task 'DB1\.SCHEMA1\.NOPE' does not exist"):
         cur.execute("create task t2 clone nope")

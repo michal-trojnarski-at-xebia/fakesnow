@@ -26,13 +26,16 @@ def parse_one(command: str) -> Expr:
     try:
         return sqlglot.parse_one(command, read="snowflake")
     except ParseError as error:
-        if describe := _describe_task(command):
+        # the statement's own text, without any comments before it
+        statements = _statements(command)
+        if len(statements) == 1 and (describe := _describe_task(statements[0])):
             return describe
         raise syntax_error(error) from None
 
 
 def _statements(command: str) -> list[str]:
-    """The text of each statement in the command, split at the semicolons between them."""
+    """The text of each statement in the command, split at the semicolons between them, from its first token to its
+    last, so without the comments around it."""
     statements: list[list[Token]] = [[]]
     for token in sqlglot.tokenize(command, read="snowflake"):
         if token.token_type == TokenType.SEMICOLON:

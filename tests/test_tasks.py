@@ -1242,6 +1242,13 @@ def test_describe_task_columns(cur: snowflake.connector.cursor.SnowflakeCursor):
     assert [d.name for d in cur.description] == SHOW_TASKS_COLUMNS
 
 
+@pytest.mark.parametrize("comment", ["/* inspect task */ ", "-- inspect task\n"])
+def test_describe_task_after_leading_comment(cur: snowflake.connector.cursor.SnowflakeCursor, comment: str):
+    cur.execute("create task t1 as select 1")
+    cur.execute(f"{comment}desc task t1")
+    assert [d.name for d in cur.description] == SHOW_TASKS_COLUMNS
+
+
 def test_describe_task_via_execute_string(conn: snowflake.connector.SnowflakeConnection):
     conn.cursor().execute("create task t1 as select 1")
     (cur,) = conn.execute_string("desc task t1")

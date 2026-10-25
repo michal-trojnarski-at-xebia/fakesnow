@@ -209,7 +209,7 @@ def _task_dependents(call: exp.Anonymous, database: str, current_schema: str | N
     child = "(list_contains(t.predecessors, d.name) or t.finalize = d.name)"
     direct = "" if recursive else f" and d.name = {_literal(name.name)}"
     tasks = tasks_table(name.database or database)
-    # union, not union all, so a task reached by several paths is visited once
+    # union, not union all, so a task reached by several paths is visited once. the requested task comes first.
     return sqlglot.parse_one(
         f"""
     with recursive deps(schema_name, name) as (
@@ -220,7 +220,7 @@ def _task_dependents(call: exp.Anonymous, database: str, current_schema: str | N
     )
     select r.* from ({rows_sql(name.database or database)}) r
     where (r.schema_name, r.name) in (select schema_name, name from deps)
-    order by r.schema_name, r.name""",
+    order by r.name != {_literal(name.name)}, r.schema_name, r.name""",
         read="duckdb",
     )
 
@@ -236,20 +236,25 @@ def task_table_functions(
     expression: Expr, duck_conn: DuckDBPyConnection, current_database: str | None, current_schema: str | None = None
 ) -> Expr:
     """Replace TABLE([<db>.]INFORMATION_SCHEMA.<function>(...)) for a task function by the subquery that produces
-    its rows, keeping any alias. The database defaults to the current database."""
-    if not (isinstance(expression, exp.TableFromRows) and isinstance(expression.this, exp.Dot)):
+    its rows, keeping any alias. The database defaults to the current database, and the qualifier can be left out
+    when the current schema is INFORMATION_SCHEMA."""
+    if not isinstance(expression, exp.TableFromRows):
         return expression
-    dot = expression.this
-    call = dot.expression
-    qualifier = dot.this
+    if isinstance(expression.this, exp.Dot):
+        call, qualifier = expression.this.expression, expression.this.this
+    elif current_schema == "INFORMATION_SCHEMA":
+        call, qualifier = expression.this, None
+    else:
+        return expression
     if not (isinstance(call, exp.Anonymous) and isinstance(call.this, str) and call.this.upper() in _FUNCTIONS):
         return expression
     database: str | None = None
-    if isinstance(qualifier, exp.Dot) and isinstance(qualifier.this, exp.Identifier):
-        database = _ident(qualifier.this)
-        qualifier = qualifier.expression
-    if not (isinstance(qualifier, exp.Identifier) and _ident(qualifier) == "INFORMATION_SCHEMA"):
-        return expression
+    if qualifier is not None:
+        if isinstance(qualifier, exp.Dot) and isinstance(qualifier.this, exp.Identifier):
+            database = _ident(qualifier.this)
+            qualifier = qualifier.expression
+        if not (isinstance(qualifier, exp.Identifier) and _ident(qualifier) == "INFORMATION_SCHEMA"):
+            return expression
     function = call.this.upper()
     database = database or current_database
     if not database:

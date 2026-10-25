@@ -2104,6 +2104,15 @@ def test_complete_task_graphs_columns(cur: snowflake.connector.cursor.SnowflakeC
     ]
 
 
+def test_task_history_unqualified_in_information_schema(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select 1")
+    cur.execute("execute task t1")
+    # USE SCHEMA <db>.INFORMATION_SCHEMA isn't supported, a connection can start in it though
+    with snowflake.connector.connect(database="db1", schema="information_schema") as conn, conn.cursor() as info:
+        info.execute("select name from table(task_history())")
+        assert info.fetchall() == [("T1",)]
+
+
 def _runs_in_two_databases(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
     cur.execute("create task t1 as select 1")
     cur.execute("execute task t1")
@@ -2184,6 +2193,13 @@ def test_task_dependents_reconverging_branches(cur: snowflake.connector.cursor.S
         cur.execute(f"create task d{i} after l{i}, r{i} as select 1")
     cur.execute("select count(*) from table(information_schema.task_dependents(task_name => 'd0'))")
     assert cur.fetchall() == [(76,)]
+
+
+def test_task_dependents_requested_task_first(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task z_root as select 1")
+    cur.execute("create task a_child after z_root as select 1")
+    cur.execute("select name from table(information_schema.task_dependents(task_name => 'z_root'))")
+    assert cur.fetchall() == [("Z_ROOT",), ("A_CHILD",)]
 
 
 def test_task_dependents_has_show_tasks_columns(cur: snowflake.connector.cursor.SnowflakeCursor):

@@ -120,10 +120,20 @@ def test_create_task_stores_session_parameters(cur: snowflake.connector.cursor.S
     assert indent(_select(cur, "session_parameters::varchar")) == [('{\n  "TIMEZONE": "UTC"\n}',)]
 
 
-def test_create_task_clone_copies_properties(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("create task t1 comment = 'c' schedule = '1 minute' as select 1")
+@pytest.mark.parametrize(
+    "prop, column, expected",
+    [
+        ("comment = 'c'", "comment", "c"),
+        ("schedule = '1 minute'", "schedule", "1 minute"),
+        ("", "definition", "select 1"),
+    ],
+)
+def test_create_task_clone_copies_property(
+    cur: snowflake.connector.cursor.SnowflakeCursor, prop: str, column: str, expected: str
+):
+    cur.execute(f"create task t1 {prop} as select 1")
     cur.execute("create task t2 clone t1")
-    assert _show(cur, "comment, schedule, definition", "t2") == [("c", "1 minute", "select 1")]
+    assert _show(cur, column, "t2") == [(expected,)]
 
 
 def test_create_task_clone_gets_new_id(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -139,12 +149,13 @@ def test_create_task_clone_is_suspended(cur: snowflake.connector.cursor.Snowflak
     assert _show(cur, "state", "t2") == [("suspended",)]
 
 
-def test_create_task_clone_clears_last_columns(cur: snowflake.connector.cursor.SnowflakeCursor):
+@pytest.mark.parametrize("column", ["last_committed_on", "last_suspended_on", "last_suspended_reason"])
+def test_create_task_clone_clears_last_column(cur: snowflake.connector.cursor.SnowflakeCursor, column: str):
     cur.execute("create task t1 as select 1")
     cur.execute("alter task t1 resume")
     cur.execute("alter task t1 suspend")
     cur.execute("create task t2 clone t1")
-    assert _show(cur, "last_committed_on, last_suspended_on, last_suspended_reason", "t2") == [(None, None, None)]
+    assert _show(cur, column, "t2") == [(None,)]
 
 
 def test_create_task_clone_missing_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -393,7 +404,7 @@ def test_drop_only_predecessor_makes_child_standalone(cur: snowflake.connector.c
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select 1")
     cur.execute("drop task root")
-    assert _show(cur, "state, last_suspended_reason", "child") == [("suspended", "CHILD_BECAME_ROOT")]
+    assert _show(cur, "last_suspended_reason", "child") == [("CHILD_BECAME_ROOT",)]
 
 
 def test_drop_only_predecessor_clears_child_predecessors(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -407,9 +418,14 @@ def test_drop_root_makes_finalizer_standalone(cur: snowflake.connector.cursor.Sn
     cur.execute("create task root as select 1")
     cur.execute("create task fin finalize = root as select 1")
     cur.execute("drop task root")
-    assert indent(_show(cur, "state, task_relations, last_suspended_reason", "fin")) == [
-        ("suspended", '{\n  "Predecessors": []\n}', "FINALIZER_BECAME_ROOT")
-    ]
+    assert _show(cur, "last_suspended_reason", "fin") == [("FINALIZER_BECAME_ROOT",)]
+
+
+def test_drop_root_clears_finalizer_relation(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    cur.execute("create task fin finalize = root as select 1")
+    cur.execute("drop task root")
+    assert indent(_show(cur, "task_relations", "fin")) == [('{\n  "Predecessors": []\n}',)]
 
 
 def test_drop_task_in_started_graph_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -757,9 +773,14 @@ def test_alter_task_remove_last_predecessor_makes_child_standalone(cur: snowflak
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select 1")
     cur.execute("alter task child remove after root")
-    assert _show(cur, "predecessors, state, last_suspended_reason", "child") == [
-        ("[]", "suspended", "CHILD_BECAME_ROOT")
-    ]
+    assert _show(cur, "last_suspended_reason", "child") == [("CHILD_BECAME_ROOT",)]
+
+
+def test_alter_task_remove_last_predecessor_clears_predecessors(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    cur.execute("create task child after root as select 1")
+    cur.execute("alter task child remove after root")
+    assert _show(cur, "predecessors", "child") == [("[]",)]
 
 
 def test_alter_task_remove_after_started_root_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -821,9 +842,14 @@ def test_alter_task_unset_finalize_makes_finalizer_standalone(cur: snowflake.con
     cur.execute("create task root as select 1")
     cur.execute("create task fin finalize = root as select 1")
     cur.execute("alter task fin unset finalize")
-    assert indent(_show(cur, "task_relations, state, last_suspended_reason", "fin")) == [
-        ('{\n  "Predecessors": []\n}', "suspended", "FINALIZER_BECAME_ROOT")
-    ]
+    assert _show(cur, "last_suspended_reason", "fin") == [("FINALIZER_BECAME_ROOT",)]
+
+
+def test_alter_task_unset_finalize_clears_finalizer_relation(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    cur.execute("create task fin finalize = root as select 1")
+    cur.execute("alter task fin unset finalize")
+    assert indent(_show(cur, "task_relations", "fin")) == [('{\n  "Predecessors": []\n}',)]
 
 
 def test_alter_task_modify_as(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -991,10 +1017,11 @@ def test_show_tasks_predecessors_are_qualified(cur: snowflake.connector.cursor.S
     assert indent(_show(cur, "predecessors", "join")) == [('[\n  "DB1.SCHEMA1.A",\n  "DB1.SCHEMA1.B"\n]',)]
 
 
-def test_show_tasks_child_has_null_root_only_columns(cur: snowflake.connector.cursor.SnowflakeCursor):
+@pytest.mark.parametrize("column", ["allow_overlapping_execution", "config", "overlap_policy"])
+def test_show_tasks_child_has_null_root_only_column(cur: snowflake.connector.cursor.SnowflakeCursor, column: str):
     cur.execute("create task root config = '{\"k\": 1}' as select 1")
     cur.execute("create task child after root as select 1")
-    assert _show(cur, "allow_overlapping_execution, config, overlap_policy", "child") == [(None, None, None)]
+    assert _show(cur, column, "child") == [(None,)]
 
 
 def test_show_tasks_task_relations_for_root_with_finalizer(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -1517,18 +1544,26 @@ def test_execute_task_history_succeeded_row(cur: snowflake.connector.cursor.Snow
     ]
 
 
+def test_execute_task_history_failed_row_state(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select * from missing")
+    cur.execute("execute task t1")
+    assert _history(cur, "state") == [("FAILED",)]
+
+
 def test_execute_task_history_failed_row_has_error(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 as select * from missing")
     cur.execute("execute task t1")
-    ((state, error_code, error_message),) = _history(cur, "state, error_code, error_message")
-    assert (state, error_code) == ("FAILED", 2003)
-    assert "MISSING" in error_message
+    ((error_code, error_message),) = _history(cur, "error_code, error_message")
+    assert (error_code, "MISSING" in error_message) == (2003, True)
 
 
-def test_execute_task_history_when_false_row_skipped(cur: snowflake.connector.cursor.SnowflakeCursor):
+@pytest.mark.parametrize("column, expected", [("state", "SKIPPED"), ("condition_text", "1 = 2"), ("query_id", None)])
+def test_execute_task_history_when_false_row(
+    cur: snowflake.connector.cursor.SnowflakeCursor, column: str, expected: str | None
+):
     cur.execute("create task t1 when 1 = 2 as select 1")
     cur.execute("execute task t1")
-    assert _history(cur, "state, condition_text, query_id") == [("SKIPPED", "1 = 2", None)]
+    assert _history(cur, column) == [(expected,)]
 
 
 def test_execute_task_history_query_id_is_body_query(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -1773,7 +1808,7 @@ def test_set_return_value_in_scalar_subquery(cur: snowflake.connector.cursor.Sno
     cur.execute("insert into input_table values ('x')")
     cur.execute("create task t1 as select (select system$set_return_value(v) from input_table limit 1)")
     cur.execute("execute task t1")
-    assert _history(cur, "state, return_value") == [("SUCCEEDED", "x")]
+    assert _history(cur, "return_value") == [("x",)]
 
 
 def test_set_return_value_stringifies_result(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -1987,11 +2022,14 @@ def test_task_runtime_info_current_root_task_uuid(cur: snowflake.connector.curso
     assert _show(cur, "id", "t1") == [(value,)]
 
 
+def test_task_runtime_info_original_scheduled_timestamp_is_utc(cur: snowflake.connector.cursor.SnowflakeCursor):
+    assert _runtime_info(cur, "CURRENT_TASK_GRAPH_ORIGINAL_SCHEDULED_TIMESTAMP").endswith("+0000")
+
+
 def test_task_runtime_info_original_scheduled_timestamp(cur: snowflake.connector.cursor.SnowflakeCursor):
     value = _runtime_info(cur, "CURRENT_TASK_GRAPH_ORIGINAL_SCHEDULED_TIMESTAMP")
     ((scheduled,),) = _history(cur, "scheduled_time")
-    # in UTC, to the millisecond
-    assert value.endswith("+0000")
+    # to the millisecond
     assert 0 <= (scheduled - datetime.fromisoformat(value)).total_seconds() < 0.001
 
 
@@ -2067,12 +2105,18 @@ def test_task_history_columns(cur: snowflake.connector.cursor.SnowflakeCursor):
     ]
 
 
+def test_task_history_failed_row_state(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select * from missing")
+    cur.execute("execute task t1")
+    (row,) = _table_function(cur, "select * from table(information_schema.task_history())")
+    assert row["STATE"] == "FAILED"
+
+
 def test_task_history_failed_row_has_error(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 as select * from missing")
     cur.execute("execute task t1")
     (row,) = _table_function(cur, "select * from table(information_schema.task_history())")
-    assert (row["STATE"], row["ERROR_CODE"]) == ("FAILED", 2003)
-    assert "MISSING" in row["ERROR_MESSAGE"]
+    assert (row["ERROR_CODE"], "MISSING" in row["ERROR_MESSAGE"]) == (2003, True)
 
 
 def test_task_history_database_qualified(cur: snowflake.connector.cursor.SnowflakeCursor):

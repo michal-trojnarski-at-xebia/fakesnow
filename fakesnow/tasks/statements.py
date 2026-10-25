@@ -189,8 +189,13 @@ class _Tokens:
         while not self.at_end() and self.peek() not in stop:
             key = self.ident().upper()
             self.expect("=")
-            # FINALIZE names a root task in the same schema, so only its name is kept
-            props[key] = self.name().name if key == "FINALIZE" else self.value()
+            if key == "FINALIZE":
+                # the task name as written, for the catalog to resolve
+                start = self.pos
+                self.name()
+                props[key] = self.sql[self.tokens[start].start : self.tokens[self.pos - 1].end + 1]
+            else:
+                props[key] = self.value()
             self.accept(",")
         return props
 

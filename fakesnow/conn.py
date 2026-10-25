@@ -204,7 +204,8 @@ class FakeSnowflakeConnection:
         session = self._instance.connect(
             database, schema, nop_regexes=self.nop_regexes, role=role, session_parameters=session_parameters
         )
-        session.role = role  # as given, not normalised again
+        # as given, not normalised again, so a quoted name keeps its case
+        session.database, session._schema, session.role = database, schema, role  # noqa: SLF001
         return session
 
     def rollback(self) -> None:

@@ -13,7 +13,7 @@ import snowflake.connector.errors
 from duckdb import DuckDBPyConnection
 
 from fakesnow import checks
-from fakesnow.tasks.statements import AlterTask, CreateTask, DropTask, TaskName
+from fakesnow.tasks.statements import AlterTask, CreateTask, DropTask, TaskName, parse_task_name
 from fakesnow.transforms.temporary import check_schema_exists
 
 # provisional messages and values, to be checked against live Snowflake
@@ -202,9 +202,12 @@ class TaskCatalog:
                 return t
         return None
 
-    def graph(self, root: Task) -> list[Task]:
-        """The root, its descendants in topological order with ties broken by name, then its finalizer."""
+    def graph(self, root: Task, proposed: Task | None = None) -> list[Task]:
+        """The root, its descendants in topological order with ties broken by name, then its finalizer. A proposed
+        task replaces the saved one of the same name."""
         tasks = self._schema_tasks(root.database, root.schema_name)
+        if proposed:
+            tasks = [t for t in tasks if t.name != proposed.name] + [proposed]
         members = {root.name}
         pending = [t for t in tasks if t.predecessors]
         grew = True
@@ -302,7 +305,7 @@ class TaskCatalog:
                 new = _suspended(new, CHILD_BECAME_ROOT)
         elif stmt.action == "SET":
             for prop, value in stmt.properties.items():
-                _set_property(new, prop, value)
+                self._set_property(new, prop, value)
         elif stmt.action == "UNSET":
             for prop in stmt.unset:
                 _unset_property(new, prop)
@@ -407,7 +410,7 @@ class TaskCatalog:
             assert pred
             siblings = {c.name for c in self.children(pred)} | {task.name}
             limits.append((len(siblings), MAX_CHILDREN, "child tasks", pred))
-        graph = self.graph(self.root_of(task))
+        graph = self.graph(self.root_of(task), proposed=task)
         limits.append((len({t.name for t in graph} | {task.name}), MAX_GRAPH_TASKS, "tasks in a graph", task))
         for count, limit, what, subject in limits:
             if count > limit:
@@ -520,25 +523,28 @@ class TaskCatalog:
             definition=stmt.definition,
         )
         for prop, value in stmt.properties.items():
-            _set_property(task, prop, value)
+            self._set_property(task, prop, value)
         return task
 
-
-def _set_property(task: Task, prop: str, value: str) -> None:
-    if prop in COLUMN_PROPERTIES:
-        column = COLUMN_PROPERTIES[prop]
-        if column == "allow_overlapping_execution":
-            task.allow_overlapping_execution = value.upper() == "TRUE"
-        elif column == "finalize":
-            task.finalize = value
+    def _set_property(self, task: Task, prop: str, value: str) -> None:
+        if prop in COLUMN_PROPERTIES:
+            column = COLUMN_PROPERTIES[prop]
+            if column == "allow_overlapping_execution":
+                task.allow_overlapping_execution = value.upper() == "TRUE"
+            elif column == "finalize":
+                database, schema, root = self.resolve(parse_task_name(value))
+                if (database, schema) != (task.database, task.schema_name):
+                    pred = f"{database}.{schema}.{root}"
+                    raise _error(OTHER_SCHEMA_PREDECESSOR.format(fqname=task.fqname, pred=pred), 2003, "02000")
+                task.finalize = root
+            else:
+                setattr(task, column, value)
+        elif prop in OTHER_PROPERTIES:
+            task.properties[prop] = value
+        elif prop in SESSION_PARAMETERS and not (prop == "AUTOCOMMIT" and value.upper() == "FALSE"):
+            task.session_parameters[prop] = value
         else:
-            setattr(task, column, value)
-    elif prop in OTHER_PROPERTIES:
-        task.properties[prop] = value
-    elif prop in SESSION_PARAMETERS and not (prop == "AUTOCOMMIT" and value.upper() == "FALSE"):
-        task.session_parameters[prop] = value
-    else:
-        raise _error(INVALID_PROPERTY.format(prop=prop), 1008, "22023")
+            raise _error(INVALID_PROPERTY.format(prop=prop), 1008, "22023")
 
 
 def _unset_property(task: Task, prop: str) -> None:

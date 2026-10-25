@@ -368,6 +368,22 @@ def test_create_task_too_many_children_raises(cur: snowflake.connector.cursor.Sn
         cur.execute("create task one_more after root as select 1")
 
 
+def test_alter_task_add_after_joining_graphs_too_large_raises(
+    cur: snowflake.connector.cursor.SnowflakeCursor, monkeypatch: pytest.MonkeyPatch
+):
+    # a smaller limit than Snowflake's 1000 keeps the graphs small
+    monkeypatch.setattr("fakesnow.tasks.catalog.MAX_GRAPH_TASKS", 3)
+    cur.execute("create task a as select 1")
+    cur.execute("create task a_child after a as select 1")
+    cur.execute("create task b as select 1")
+    cur.execute("create task b_child after b as select 1")
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"Task DB1\.SCHEMA1\.B exceeds the maximum of 3 tasks in a graph\.",
+    ):
+        cur.execute("alter task b add after a")
+
+
 def test_drop_only_predecessor_makes_child_standalone(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select 1")
@@ -505,6 +521,18 @@ def test_create_finalizer_of_quoted_root_with_period(cur: snowflake.connector.cu
     cur.execute('create task "root.task" as select 1')
     cur.execute('create task fin finalize = "root.task" as select 1')
     assert cur.fetchall() == [("Task FIN successfully created.",)]
+
+
+def test_create_finalizer_of_root_in_other_schema_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create schema s2")
+    cur.execute("create task s2.root as select 1")
+    cur.execute("use schema schema1")  # create schema switches to the new schema
+    cur.execute("create task root as select 1")
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"Task DB1\.SCHEMA1\.FIN cannot depend on task DB1\.S2\.ROOT in a different schema\.",
+    ):
+        cur.execute("create task fin finalize = s2.root as select 1")
 
 
 def test_create_task_finalizing_itself_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -1480,6 +1508,14 @@ def test_drop_schema_drops_its_task_history(cur: snowflake.connector.cursor.Snow
 def test_drop_schema_drops_its_task_graph_runs(cur: snowflake.connector.cursor.SnowflakeCursor):
     _run_and_drop_schema(cur)
     assert _graph_runs(cur, "root_task_name") == []
+
+
+def test_execute_task_in_quoted_schema_finds_sibling(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute('create schema "Mixed"')
+    cur.execute("create task sibling as select 1")
+    cur.execute("create task t as alter task sibling set comment = 'done'")
+    cur.execute("execute task t")
+    assert _show(cur, "comment", "sibling") == [("done",)]
 
 
 def test_execute_task_runs_siblings_by_name(cur: snowflake.connector.cursor.SnowflakeCursor, log: None):

@@ -58,19 +58,19 @@ def test_parse_create_task_definition_keeps_spelling():
 def test_parse_create_task_finalize_is_property():
     s = parse_task_statement("create task f1 finalize = r1 as select 1")
     assert isinstance(s, CreateTask)
-    assert s.properties == {"FINALIZE": "R1"}
+    assert s.properties == {"FINALIZE": "r1"}
 
 
 def test_parse_create_task_finalize_keeps_quoted_name_whole():
     s = parse_task_statement('create task f1 finalize = "root.task" as select 1')
     assert isinstance(s, CreateTask)
-    assert s.properties == {"FINALIZE": "root.task"}
+    assert s.properties == {"FINALIZE": '"root.task"'}
 
 
-def test_parse_create_task_finalize_qualified_name():
+def test_parse_create_task_finalize_keeps_qualifiers():
     s = parse_task_statement("create task f1 finalize = db1.schema1.r1 as select 1")
     assert isinstance(s, CreateTask)
-    assert s.properties == {"FINALIZE": "R1"}
+    assert s.properties == {"FINALIZE": "db1.schema1.r1"}
 
 
 def test_parse_create_task_property_values():

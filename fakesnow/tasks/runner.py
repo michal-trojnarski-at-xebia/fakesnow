@@ -132,7 +132,9 @@ class _GraphRun:
             predecessor_return_values={
                 p: self.return_values.get(p) for p in task.predecessors if self._state_of(task, p) != _SUSPENDED
             },
-            ancestor_return_values={a: self.return_values.get(a) for a in self._ancestors(task)},
+            ancestor_return_values={
+                a: self.return_values.get(a) for a in self._ancestors(task) if self._state_of(task, a) != _SUSPENDED
+            },
         )
         session = self.conn.open_session(
             task.database, task.schema_name, task.owner, task.warehouse, task.session_parameters

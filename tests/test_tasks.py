@@ -2026,6 +2026,18 @@ def _unmatched_predecessor_lookup(cur: snowflake.connector.cursor.SnowflakeCurso
     cur.execute("execute task root")
 
 
+def test_predecessor_return_value_suspended_predecessor_name_fails(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table seen (v varchar)")
+    cur.execute("create task root as select 1")
+    cur.execute("create task a after root as select system$set_return_value('a')")
+    cur.execute("create task b after root as select 1")
+    cur.execute("create task c after a, b as insert into seen select system$get_predecessor_return_value('B')")
+    cur.execute("alter task a resume")
+    cur.execute("alter task c resume")
+    cur.execute("execute task root")
+    assert _history(cur, "state", "c") == [("FAILED",)]
+
+
 def test_predecessor_return_value_unmatched_name_fails(cur: snowflake.connector.cursor.SnowflakeCursor):
     _unmatched_predecessor_lookup(cur)
     assert _history(cur, "state", "child") == [("FAILED",)]

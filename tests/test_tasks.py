@@ -1298,6 +1298,31 @@ def test_execute_task_suspended_child_counts_as_succeeded(cur: snowflake.connect
     assert _log(cur) == ["root", "grandchild"]
 
 
+def test_execute_task_join_with_all_predecessors_suspended_is_skipped(
+    cur: snowflake.connector.cursor.SnowflakeCursor, log: None
+):
+    _logging_task(cur, "root")
+    _logging_task(cur, "a", "after root")
+    _logging_task(cur, "b", "after root")
+    _logging_task(cur, "c", "after a, b")
+    cur.execute("alter task c resume")
+    cur.execute("execute task root")
+    assert _log(cur) == ["root"]
+
+
+def test_execute_task_join_with_one_predecessor_resumed_runs(
+    cur: snowflake.connector.cursor.SnowflakeCursor, log: None
+):
+    _logging_task(cur, "root")
+    _logging_task(cur, "a", "after root")
+    _logging_task(cur, "b", "after root")
+    _logging_task(cur, "c", "after a, b")
+    cur.execute("alter task a resume")
+    cur.execute("alter task c resume")
+    cur.execute("execute task root")
+    assert _log(cur) == ["root", "a", "c"]
+
+
 def test_execute_task_suspended_child_has_no_history_row(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select 1")
@@ -1611,6 +1636,18 @@ def _create_root_returning_value(cur: snowflake.connector.cursor.SnowflakeCursor
 
 def test_set_return_value_recorded_in_history(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 as select system$set_return_value('done')")
+    cur.execute("execute task t1")
+    assert _history(cur, "return_value") == [("done",)]
+
+
+def test_set_return_value_after_other_column(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select 'unrelated', system$set_return_value('done')")
+    cur.execute("execute task t1")
+    assert _history(cur, "return_value") == [("done",)]
+
+
+def test_set_return_value_inside_expression(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select coalesce(system$set_return_value('done'), 'other')")
     cur.execute("execute task t1")
     assert _history(cur, "return_value") == [("done",)]
 
@@ -1985,6 +2022,37 @@ def test_complete_task_graphs_columns(cur: snowflake.connector.cursor.SnowflakeC
         "GRAPH_RUN_GROUP_ID",
         "BACKFILL_INFO",
     ]
+
+
+def _runs_in_two_databases(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
+    cur.execute("create task t1 as select 1")
+    cur.execute("execute task t1")
+    cur.execute("create database db2")
+    cur.execute("create schema db2.schema1")
+    cur.execute("create task db2.schema1.t2 as select 1")
+    cur.execute("execute task db2.schema1.t2")
+    cur.execute("use schema db1.schema1")
+
+
+def test_task_history_covers_all_databases(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _runs_in_two_databases(cur)
+    cur.execute("select database_name, name from table(information_schema.task_history()) order by name")
+    assert cur.fetchall() == [("DB1", "T1"), ("DB2", "T2")]
+
+
+def test_task_history_database_name_selects_other_database(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _runs_in_two_databases(cur)
+    cur.execute("select name from table(information_schema.task_history(database_name => 'db2'))")
+    assert cur.fetchall() == [("T2",)]
+
+
+def test_complete_task_graphs_covers_all_databases(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _runs_in_two_databases(cur)
+    cur.execute(
+        "select database_name, root_task_name from table(information_schema.complete_task_graphs()) "
+        "order by root_task_name"
+    )
+    assert cur.fetchall() == [("DB1", "T1"), ("DB2", "T2")]
 
 
 def test_complete_task_graphs_root_task_name_filter(cur: snowflake.connector.cursor.SnowflakeCursor):

@@ -26,6 +26,7 @@ SUCCEEDED = "SUCCEEDED"
 FAILED = "FAILED"
 SKIPPED = "SKIPPED"
 _NOT_RUN = "NOT_RUN"  # a predecessor failed or was skipped, so there is no history row
+_SUSPENDED = "SUSPENDED"  # a suspended child, which has no history row either
 
 
 def run_graph(conn: FakeSnowflakeConnection, catalog: TaskCatalog, root: Task, config_override: str | None) -> None:
@@ -64,11 +65,14 @@ class _GraphRun:
                     self._run_task(task)
             elif task.name == self.root.name:
                 self._run_task(task)
-            elif any(self.states.get(p, SUCCEEDED) != SUCCEEDED for p in task.predecessors):
+            elif any(self.states.get(p, SUCCEEDED) not in (SUCCEEDED, _SUSPENDED) for p in task.predecessors):
+                self.states[task.name] = _NOT_RUN
+            elif len(task.predecessors) > 1 and all(self.states.get(p) == _SUSPENDED for p in task.predecessors):
+                # a task with several predecessors needs at least one of them resumed
                 self.states[task.name] = _NOT_RUN
             elif task.state == SUSPENDED:
                 # a suspended child is skipped without a history row, and its dependents run as if it succeeded
-                self.states[task.name] = SUCCEEDED
+                self.states[task.name] = _SUSPENDED
             else:
                 self._run_task(task)
         self._record_graph_run()

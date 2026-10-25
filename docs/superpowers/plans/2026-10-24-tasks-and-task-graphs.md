@@ -561,3 +561,5 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
     rejects it with `Invalid finalizer task <finalizer>: <root> is not a root task.`
 22. `FINALIZE = <root in another schema>` — fakesnow rejects it with the predecessor message,
     `Task <fin> cannot depend on task <root> in a different schema.`
+23. A task with several predecessors, all suspended, doesn't run (per the docs); fakesnow also doesn't run its
+    dependents, as if it had been skipped, which the docs don't say.

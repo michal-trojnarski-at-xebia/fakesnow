@@ -1335,6 +1335,34 @@ def test_execute_task_join_with_one_predecessor_resumed_runs(
     assert _log(cur) == ["root", "a", "c"]
 
 
+def _split_join_by_drop(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
+    """A and B become roots when their predecessor is dropped, and C keeps both as predecessors."""
+    _logging_task(cur, "root")
+    _logging_task(cur, "a", "after root")
+    _logging_task(cur, "b", "after root")
+    _logging_task(cur, "c", "after a, b")
+    cur.execute("drop task root")
+    cur.execute("alter task c resume")
+    cur.execute("alter task a resume")
+
+
+def test_execute_task_join_waits_for_resumed_predecessor_in_other_graph(
+    cur: snowflake.connector.cursor.SnowflakeCursor, log: None
+):
+    _split_join_by_drop(cur)
+    cur.execute("alter task b resume")
+    cur.execute("execute task a")
+    assert _log(cur) == ["a"]
+
+
+def test_execute_task_join_ignores_suspended_predecessor_in_other_graph(
+    cur: snowflake.connector.cursor.SnowflakeCursor, log: None
+):
+    _split_join_by_drop(cur)
+    cur.execute("execute task a")
+    assert _log(cur) == ["a", "c"]
+
+
 def test_execute_task_suspended_child_has_no_history_row(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select 1")

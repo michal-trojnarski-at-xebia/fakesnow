@@ -571,3 +571,6 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
 26. `SHOW TASKS ... LIMIT n FROM 'name'` returns the rows following the name (fakesnow: `name > 'name'`, also for a
     partial name); `SYSTEM$GET_PREDECESSOR_RETURN_VALUE('name')` matches the name case-sensitively, as the docs say,
     and a name matching no enabled predecessor or ancestor gives NULL (the docs say the call fails).
+27. DROP of a shared predecessor (`ROOT → A/B → C`, drop ROOT) is allowed as the docs say, leaving C with predecessors
+    in two graphs; running one of them, fakesnow runs C only if every other resumed predecessor is in that run
+    (a suspended one doesn't count). Compare with 24, where REMOVE AFTER is rejected instead.

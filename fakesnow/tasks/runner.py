@@ -84,9 +84,9 @@ class _GraphRun:
                     self._run_task(task)
             elif task.name == self.root.name:
                 self._run_task(task)
-            elif any(self.states.get(p, SUCCEEDED) not in (SUCCEEDED, _SUSPENDED) for p in task.predecessors):
+            elif any(self._state_of(task, p) not in (SUCCEEDED, _SUSPENDED) for p in task.predecessors):
                 self.states[task.name] = _NOT_RUN
-            elif len(task.predecessors) > 1 and all(self.states.get(p) == _SUSPENDED for p in task.predecessors):
+            elif len(task.predecessors) > 1 and all(self._state_of(task, p) == _SUSPENDED for p in task.predecessors):
                 # a task with several predecessors needs at least one of them resumed
                 self.states[task.name] = _NOT_RUN
             elif task.state == SUSPENDED:
@@ -96,6 +96,14 @@ class _GraphRun:
                 self._run_task(task)
         self._record_graph_run()
         self.catalog.mark_committed(self.root)
+
+    def _state_of(self, task: Task, predecessor: str) -> str:
+        """A predecessor's state in this run. One outside the graph, eg: a former sibling that became a root when
+        their predecessor was dropped, hasn't run in it, unless it's suspended."""
+        if predecessor in self.states:
+            return self.states[predecessor]
+        other = self.catalog.get(task.database, task.schema_name, predecessor)
+        return _SUSPENDED if other is None or other.state == SUSPENDED else _NOT_RUN
 
     def _ancestors(self, task: Task) -> set[str]:
         tasks = {t.name: t for t in self.graph}
@@ -118,7 +126,7 @@ class _GraphRun:
             config=self.config,
             # the enabled predecessors', a suspended one has none
             predecessor_return_values={
-                p: self.return_values.get(p) for p in task.predecessors if self.states.get(p) != _SUSPENDED
+                p: self.return_values.get(p) for p in task.predecessors if self._state_of(task, p) != _SUSPENDED
             },
             ancestor_return_values={a: self.return_values.get(a) for a in self._ancestors(task)},
         )

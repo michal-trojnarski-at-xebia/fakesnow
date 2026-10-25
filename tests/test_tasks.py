@@ -1717,20 +1717,35 @@ def test_execute_task_history_records_root_config(cur: snowflake.connector.curso
     assert indent(_history(cur, "config")) == [('{\n  "a": 1\n}',)]
 
 
-def test_execute_task_graph_run_succeeded(cur: snowflake.connector.cursor.SnowflakeCursor):
+@pytest.mark.parametrize(
+    "column, expected",
+    [
+        ("root_task_name", "ROOT"),
+        ("schema_name", "SCHEMA1"),
+        ("state", "SUCCEEDED"),
+        ("scheduled_from", "EXECUTE_TASK"),
+        ("attempt_number", 1),
+    ],
+)
+def test_execute_task_graph_run_succeeded(
+    cur: snowflake.connector.cursor.SnowflakeCursor, column: str, expected: object
+):
     cur.execute("create task root as select 1")
     cur.execute("execute task root")
-    assert _graph_runs(cur, "root_task_name, schema_name, state, scheduled_from, attempt_number") == [
-        ("ROOT", "SCHEMA1", "SUCCEEDED", "EXECUTE_TASK", 1)
-    ]
+    assert _graph_runs(cur, column) == [(expected,)]
 
 
-def test_execute_task_graph_run_failed_records_first_error(cur: snowflake.connector.cursor.SnowflakeCursor):
+@pytest.mark.parametrize(
+    "column, expected", [("state", "FAILED"), ("first_error_task_name", "CHILD"), ("first_error_code", 2003)]
+)
+def test_execute_task_graph_run_failed_records_first_error(
+    cur: snowflake.connector.cursor.SnowflakeCursor, column: str, expected: object
+):
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select * from missing")
     cur.execute("select system$task_dependents_enable('root')")
     cur.execute("execute task root")
-    assert _graph_runs(cur, "state, first_error_task_name, first_error_code") == [("FAILED", "CHILD", 2003)]
+    assert _graph_runs(cur, column) == [(expected,)]
 
 
 def test_complete_task_graphs_excludes_skipped_root(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -2141,9 +2156,7 @@ def test_task_runtime_info_original_scheduled_timestamp(cur: snowflake.connector
     assert 0 <= (scheduled - datetime.fromisoformat(value)).total_seconds() < 0.001
 
 
-def test_get_predecessor_return_value_without_argument_and_several_predecessors(
-    cur: snowflake.connector.cursor.SnowflakeCursor,
-):
+def _ambiguous_predecessor_lookup(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
     cur.execute("create table seen (v varchar)")
     cur.execute("create task root as select 1")
     cur.execute("create task a after root as select system$set_return_value('a')")
@@ -2151,8 +2164,21 @@ def test_get_predecessor_return_value_without_argument_and_several_predecessors(
     cur.execute("create task c after a, b as insert into seen select system$get_predecessor_return_value()")
     cur.execute("select system$task_dependents_enable('root')")
     cur.execute("execute task root")
-    cur.execute("select v from seen")
-    assert cur.fetchall() == [(None,)]
+
+
+def test_get_predecessor_return_value_without_argument_and_several_predecessors_fails(
+    cur: snowflake.connector.cursor.SnowflakeCursor,
+):
+    _ambiguous_predecessor_lookup(cur)
+    assert _history(cur, "state", "c") == [("FAILED",)]
+
+
+def test_get_predecessor_return_value_without_argument_and_several_predecessors_writes_nothing(
+    cur: snowflake.connector.cursor.SnowflakeCursor,
+):
+    _ambiguous_predecessor_lookup(cur)
+    cur.execute("select count(*) from seen")
+    assert cur.fetchall() == [(0,)]
 
 
 def test_set_return_value_outside_task_returns_null(cur: snowflake.connector.cursor.SnowflakeCursor):

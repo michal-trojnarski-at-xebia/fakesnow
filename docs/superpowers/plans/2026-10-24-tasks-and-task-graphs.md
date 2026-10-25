@@ -578,3 +578,6 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
     C even when all of C's own predecessors are suspended, or one of them failed. The docs don't say what a suspended
     child does when one of its predecessors fails: fakesnow follows "the graph continues as though the child task had
     succeeded", so a dependent of the suspended child still runs.
+29. `SYSTEM$GET_PREDECESSOR_RETURN_VALUE()` without a name, in a task with several enabled predecessors, fails the task
+    (the docs say the name is required then). The error code and message are provisional (fakesnow: 100357, "needs a
+    task name when the task has several enabled predecessors").

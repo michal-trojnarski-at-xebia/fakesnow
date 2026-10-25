@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+import snowflake.connector.errors
 from duckdb.func import SPECIAL
 from sqlglot import Expr, exp
 
@@ -55,6 +56,9 @@ _RUNS: weakref.WeakValueDictionary[str, TaskRunContext] = weakref.WeakValueDicti
 
 # provisional formats, to be checked against live Snowflake (see "Live checks" in the plan)
 _TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%f%z"  # rendered in UTC
+_AMBIGUOUS_PREDECESSOR = (
+    "SYSTEM$GET_PREDECESSOR_RETURN_VALUE needs a task name when the task has several enabled predecessors"
+)
 
 
 def task_functions(expression: Expr, context: TaskRunContext | None) -> Expr:
@@ -117,8 +121,11 @@ def _read(function: str, args: list[Expr], context: TaskRunContext) -> str | Non
         return _config(arg, context.config)
     # GET_PREDECESSOR_RETURN_VALUE, with no argument the only predecessor's
     values = context.predecessor_return_values
+    if arg is None and len(values) > 1:
+        # the name is required with several, so the call fails
+        raise snowflake.connector.errors.ProgrammingError(msg=_AMBIGUOUS_PREDECESSOR, errno=100357, sqlstate="P0000")
     if arg is None:
-        return next(iter(values.values())) if len(values) == 1 else None  # ambiguous with several
+        return next(iter(values.values()), None)
     # matched as given, as task names are case-sensitive here
     return values[arg] if arg in values else context.ancestor_return_values.get(arg)
 

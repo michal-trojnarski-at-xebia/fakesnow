@@ -233,6 +233,16 @@ def test_create_task_commits_open_transaction(_fakesnow: None):
         assert cur.fetchall() == [(1,)]
 
 
+def test_create_task_commits_explicit_transaction(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table t (i int)")
+    cur.execute("begin")
+    cur.execute("insert into t values (1)")
+    cur.execute("create task t1 as select 1")
+    cur.execute("rollback")
+    cur.execute("select i from t")
+    assert cur.fetchall() == [(1,)]
+
+
 def test_create_task_no_current_database_raises():
     with fakesnow.patch(), snowflake.connector.connect() as conn:
         with pytest.raises(snowflake.connector.errors.ProgrammingError, match="does not have a current database") as e:

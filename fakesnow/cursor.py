@@ -490,19 +490,23 @@ class FakeSnowflakeCursor:
 
         result_sql = None
 
-        if not self._conn._autocommit:
+        if (
+            transformed.args.get("task_statement")
+            and statement_type.statement_type_id(transformed) == statement_type.DDL
+        ):
+            # task DDL is written through a connection of its own, so the active transaction, explicit or implicit, is
+            # committed first, as Snowflake does before any DDL
+            self._duck_conn.commit()
+            self._conn._in_transaction = False
+
+        elif not self._conn._autocommit:
             # Snowflake implicitly commits the active transaction before executing DDL statements
             # This will also cause the DDL statement to run in its own transaction and commit
             # see https://docs.snowflake.com/en/sql-reference/transactions#ddl
             # and https://docs.snowflake.com/en/sql-reference/sql-ddl-summary
             # TODO: include DESCRIBE, SHOW, USE in this list of DDL statements
-            if (
-                isinstance(transformed, (exp.Alter, exp.Comment, exp.Create, exp.Drop))
-                or transformed.args.get("create_stage_name")
-                or (
-                    transformed.args.get("task_statement")
-                    and statement_type.statement_type_id(transformed) == statement_type.DDL
-                )
+            if isinstance(transformed, (exp.Alter, exp.Comment, exp.Create, exp.Drop)) or transformed.args.get(
+                "create_stage_name"
             ):
                 self._duck_conn.commit()
                 self._conn._in_transaction = False

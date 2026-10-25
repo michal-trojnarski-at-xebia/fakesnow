@@ -2489,8 +2489,7 @@ def test_get_task_graph_config(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("""create task t1 config = '{"a": 1}' as insert into seen select system$get_task_graph_config()""")
     cur.execute("execute task t1")
     cur.execute("select v from seen")
-    # as written
-    assert cur.fetchall() == [('{"a": 1}',)]
+    assert indent(cur.fetchall()) == [('{\n  "a": 1\n}',)]
 
 
 def test_get_task_graph_config_key(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -2532,7 +2531,7 @@ def test_get_task_graph_config_using_config(cur: snowflake.connector.cursor.Snow
     cur.execute("""create task t1 config = '{"a": 1}' as insert into seen select system$get_task_graph_config()""")
     cur.execute("""execute task t1 using config = '{"b": 2}'""")
     cur.execute("select v from seen")
-    assert cur.fetchall() == [('{"a":1,"b":2}',)]
+    assert indent(cur.fetchall()) == [('{\n  "a": 1,\n  "b": 2\n}',)]
 
 
 def test_current_user_task_name(cur: snowflake.connector.cursor.SnowflakeCursor):

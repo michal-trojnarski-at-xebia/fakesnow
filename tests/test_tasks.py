@@ -1817,6 +1817,36 @@ def test_execute_task_in_cycle_raises(cur: snowflake.connector.cursor.SnowflakeC
         cur.execute("execute task a")
 
 
+def _descendant_cycle(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
+    cur.execute("create task root as select 1")
+    cur.execute("create task a after root as select 1")
+    cur.execute("create task b after a as select 1")
+    cur.execute("alter task a add after b")
+
+
+def test_execute_task_descendant_cycle_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _descendant_cycle(cur)
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError, match=r"Graph has at least one cycle containing task A\."
+    ):
+        cur.execute("execute task root")
+
+
+def test_execute_task_descendant_cycle_error_code(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _descendant_cycle(cur)
+    with pytest.raises(snowflake.connector.errors.ProgrammingError) as e:
+        cur.execute("execute task root")
+    assert (e.value.errno, e.value.sqlstate) == (91445, "22000")
+
+
+def test_execute_task_descendant_cycle_runs_nothing(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _descendant_cycle(cur)
+    with pytest.raises(snowflake.connector.errors.ProgrammingError):
+        cur.execute("execute task root")
+    cur.execute("select count(*) from table(information_schema.task_history())")
+    assert cur.fetchall() == [(0,)]
+
+
 def test_execute_task_suspended_child_has_no_history_row(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select 1")

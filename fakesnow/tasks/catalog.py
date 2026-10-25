@@ -255,7 +255,19 @@ class TaskCatalog:
 
     def graph(self, root: Task, proposed: Task | None = None) -> list[Task]:
         """The root, its descendants in the order they become ready to run, then its finalizer. A proposed task
-        replaces the saved one of the same name."""
+        replaces the saved one of the same name. Descendants that never become ready, as they're in or after a cycle,
+        come last by name."""
+        ordered, cyclic = self._ordered(root, proposed)
+        finalizer = self.finalizer_of(root)
+        return ordered + cyclic + ([finalizer] if finalizer else [])
+
+    def cycle_member(self, root: Task) -> str | None:
+        """The first task by name in or after a cycle among the root's descendants, if any."""
+        _, cyclic = self._ordered(root, None)
+        return cyclic[0].name if cyclic else None
+
+    def _ordered(self, root: Task, proposed: Task | None) -> tuple[list[Task], list[Task]]:
+        """The root and its descendants in the order they become ready to run, and those that never do."""
         tasks = self._schema_tasks(root.database, root.schema_name)
         if proposed:
             tasks = [t for t in tasks if t.name != proposed.name] + [proposed]
@@ -289,11 +301,7 @@ class TaskCatalog:
                     if waiting[child] == 0:
                         ready.append(child)
             wave = ready
-        ordered.extend(by_name[name] for name in sorted(waiting))  # a cycle, which EXECUTE TASK rejects
-        finalizer = self.finalizer_of(root)
-        if finalizer:
-            ordered.append(finalizer)
-        return ordered
+        return ordered, [by_name[name] for name in sorted(waiting)]
 
     def check_root_suspended(self, task: Task) -> None:
         """Raise if the root of the task's graph, which may be the task itself, is started."""

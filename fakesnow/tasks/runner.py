@@ -28,6 +28,7 @@ EXECUTED = "Task {name} is scheduled to run immediately."
 NOT_ROOT = (
     "Execute task cannot be called on non-root task {fqname}. Call EXECUTE TASK on the root task of its graph instead."
 )
+CYCLE = "Graph has at least one cycle containing task {name}."
 UNREACHABLE = "Unreachable task {fqname} found. The graph has more than one root task (one without predecessors)."
 
 SCHEDULED_FROM = "EXECUTE TASK"
@@ -57,6 +58,8 @@ def run_graph(conn: FakeSnowflakeConnection, catalog: TaskCatalog, root: Task, c
             raise snowflake.connector.errors.ProgrammingError(
                 msg=UNREACHABLE.format(fqname=fqname), errno=91419, sqlstate="22000"
             )
+    if cyclic := catalog.cycle_member(root):
+        raise snowflake.connector.errors.ProgrammingError(msg=CYCLE.format(name=cyclic), errno=91445, sqlstate="22000")
     # the run doesn't commit the caller's transaction, nor see its uncommitted writes, as it runs in sessions of its
     # own
     _GraphRun(conn, catalog, root, _merged_config(root.config, config_override)).run(graph)
@@ -117,7 +120,7 @@ class _GraphRun:
         self.catalog.mark_committed(self.root)
 
     def _state_of(self, predecessor: str) -> str:
-        """A predecessor's state in this run, which hasn't run if it's in a cycle."""
+        """A predecessor's state in this run."""
         return self.states.get(predecessor, _NOT_RUN)
 
     def _ancestors(self, task: Task) -> set[str]:

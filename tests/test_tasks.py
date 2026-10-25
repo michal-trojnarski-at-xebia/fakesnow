@@ -2223,6 +2223,16 @@ def test_complete_task_graphs_excludes_runs_older_than_an_hour(
     assert cur.fetchall() == [(0,)]
 
 
+def test_task_history_excludes_runs_older_than_seven_days(
+    cur: snowflake.connector.cursor.SnowflakeCursor, monkeypatch: pytest.MonkeyPatch
+):
+    cur.execute("create task t1 as select 1")
+    monkeypatch.setattr("fakesnow.tasks.runner.now", lambda: datetime.now().astimezone() - timedelta(days=8))
+    cur.execute("execute task t1")
+    cur.execute("select count(*) from table(information_schema.task_history())")
+    assert cur.fetchall() == [(0,)]
+
+
 def test_complete_task_graphs_default_result_limit(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 as select 1")
     for _ in range(101):

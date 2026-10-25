@@ -194,6 +194,8 @@ def _task_history(call: exp.Anonymous, database: str, current_schema: str | None
         },
     )
     filters = _filters(args, {"TASK_NAME": "name", "DATABASE_NAME": "database_name", "SCHEMA_NAME": "schema_name"})
+    # the history is kept for runs scheduled in the past 7 days
+    filters.append("scheduled_time >= current_timestamp - interval 7 day")
     columns = _HISTORY_COLUMNS.format(graph_version=GRAPH_VERSION)
     return _select(columns, history_table, databases, filters, args)
 

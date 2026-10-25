@@ -90,16 +90,29 @@ def test_parse_create_task_finalize_keeps_qualifiers():
     assert s.properties == {"FINALIZE": "db1.schema1.r1"}
 
 
-def test_parse_create_task_property_values():
-    s = parse_task_statement("create task t warehouse = wh allow_overlapping_execution = true retries = 3 as select 1")
+@pytest.mark.parametrize(
+    "prop, expected",
+    [
+        ("warehouse = wh", {"WAREHOUSE": "WH"}),
+        ("allow_overlapping_execution = true", {"ALLOW_OVERLAPPING_EXECUTION": "TRUE"}),
+        ("retries = 3", {"RETRIES": "3"}),
+    ],
+)
+def test_parse_create_task_property_value(prop: str, expected: dict[str, str]):
+    s = parse_task_statement(f"create task t {prop} as select 1")
     assert isinstance(s, CreateTask)
-    assert s.properties == {"WAREHOUSE": "WH", "ALLOW_OVERLAPPING_EXECUTION": "TRUE", "RETRIES": "3"}
+    assert s.properties == expected
 
 
-def test_parse_create_task_if_not_exists_and_or_alter():
-    s = parse_task_statement("create or alter task if not exists t schedule = '1 minute' as select 1")
+def test_parse_create_or_alter_task():
+    s = parse_task_statement("create or alter task t as select 1")
     assert isinstance(s, CreateTask)
     assert s.or_alter
+
+
+def test_parse_create_task_if_not_exists():
+    s = parse_task_statement("create task if not exists t as select 1")
+    assert isinstance(s, CreateTask)
     assert s.if_not_exists
 
 
@@ -115,10 +128,15 @@ def test_parse_alter_task_resume():
     assert s.action == "RESUME"
 
 
-def test_parse_alter_task_suspend_if_exists():
-    s = parse_task_statement("alter task if exists t1 suspend")
+def test_parse_alter_task_suspend():
+    s = parse_task_statement("alter task t1 suspend")
     assert isinstance(s, AlterTask)
     assert s.action == "SUSPEND"
+
+
+def test_parse_alter_task_if_exists():
+    s = parse_task_statement("alter task if exists t1 suspend")
+    assert isinstance(s, AlterTask)
     assert s.if_exists
 
 
@@ -171,15 +189,35 @@ def test_parse_alter_task_remove_when():
 
 
 def test_parse_drop_task():
-    assert parse_task_statement("drop task if exists db1.s1.t1") == DropTask(TaskName("DB1", "S1", "T1"), True)
+    assert parse_task_statement("drop task db1.s1.t1") == DropTask(TaskName("DB1", "S1", "T1"), False)
 
 
-def test_parse_describe_task():
-    assert parse_task_statement("desc task t1") == DescribeTask(TaskName(None, None, "T1"))
-    assert parse_task_statement("describe task t1") == DescribeTask(TaskName(None, None, "T1"))
+def test_parse_drop_task_if_exists():
+    assert parse_task_statement("drop task if exists t1") == DropTask(TaskName(None, None, "T1"), True)
 
 
-def test_parse_show_tasks_filters():
+@pytest.mark.parametrize("keyword", ["desc", "describe"])
+def test_parse_describe_task(keyword: str):
+    assert parse_task_statement(f"{keyword} task t1") == DescribeTask(TaskName(None, None, "T1"))
+
+
+@pytest.mark.parametrize(
+    "clause, field, expected",
+    [
+        ("terse tasks", "terse", True),
+        ("tasks like 'T%'", "like", "T%"),
+        ("tasks starts with 'T'", "starts_with", "T"),
+        ("tasks root only", "root_only", True),
+        ("tasks limit 5", "limit", 5),
+        ("tasks limit 5 from 'T1'", "limit_from", "T1"),
+    ],
+)
+def test_parse_show_tasks_clause(clause: str, field: str, expected: object):
+    assert getattr(parse_task_statement(f"show {clause}"), field) == expected
+
+
+def test_parse_show_tasks_all_clauses_together():
+    # the interaction under test: every clause, in Snowflake's order, in one statement
     assert parse_task_statement(
         "show terse tasks like 'T%' in schema db1.s1 starts with 'T' root only limit 5 from 'T1'"
     ) == ShowTasks(

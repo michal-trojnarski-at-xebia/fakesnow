@@ -154,6 +154,9 @@ class _GraphRun:
             state, error_code, error_message = FAILED, 0, str(e)
         finally:
             session.close()
+        if state == FAILED and query_start_time and query_id is None:
+            # the body failed, but it ran, so it has a query id like any other query
+            query_id = str(uuid.uuid4())
 
         self.states[task.name] = state
         self.return_values[task.name] = context.return_value

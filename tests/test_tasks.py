@@ -975,38 +975,49 @@ def test_show_tasks_columns(cur: snowflake.connector.cursor.SnowflakeCursor):
     assert [d.name for d in cur.description] == SHOW_TASKS_COLUMNS
 
 
-def test_show_tasks_new_task_row(dcur: snowflake.connector.cursor.DictCursor):
+_NEW_TASK_ROW = {
+    "name": "T1",
+    "database_name": "DB1",
+    "schema_name": "SCHEMA1",
+    "owner": "PUBLIC",
+    "comment": None,
+    "warehouse": None,
+    "schedule": "5 minute",
+    "scheduling_mode": None,
+    "target_completion_interval": None,
+    "predecessors": "[]",
+    "state": "suspended",
+    "definition": "select 1",
+    "condition": None,
+    "allow_overlapping_execution": "false",
+    "error_integration": None,
+    "success_integration": None,
+    "last_committed_on": None,
+    "last_suspended_on": None,
+    "owner_role_type": "ROLE",
+    "config": None,
+    "last_suspended_reason": None,
+    "task_relations": '{\n  "Predecessors": []\n}',
+    "execute_as_user": None,
+    "overlap_policy": None,
+}
+
+
+def _new_task_row(dcur: snowflake.connector.cursor.DictCursor, show: str) -> dict:
     dcur.execute("create task t1 schedule = '5 minute' as select 1")
-    dcur.execute("show tasks")
+    dcur.execute(show)
     (row,) = dindent(dcur.fetchall())
-    assert row.pop("created_on")
-    assert row.pop("id")
-    assert row == {
-        "name": "T1",
-        "database_name": "DB1",
-        "schema_name": "SCHEMA1",
-        "owner": "PUBLIC",
-        "comment": None,
-        "warehouse": None,
-        "schedule": "5 minute",
-        "scheduling_mode": None,
-        "target_completion_interval": None,
-        "predecessors": "[]",
-        "state": "suspended",
-        "definition": "select 1",
-        "condition": None,
-        "allow_overlapping_execution": "false",
-        "error_integration": None,
-        "success_integration": None,
-        "last_committed_on": None,
-        "last_suspended_on": None,
-        "owner_role_type": "ROLE",
-        "config": None,
-        "last_suspended_reason": None,
-        "task_relations": '{\n  "Predecessors": []\n}',
-        "execute_as_user": None,
-        "overlap_policy": None,
-    }
+    return row
+
+
+@pytest.mark.parametrize("column, expected", _NEW_TASK_ROW.items())
+def test_show_tasks_new_task_row(dcur: snowflake.connector.cursor.DictCursor, column: str, expected: str | None):
+    assert _new_task_row(dcur, "show tasks")[column] == expected
+
+
+@pytest.mark.parametrize("column", ["created_on", "id"])
+def test_show_tasks_new_task_row_is_set(dcur: snowflake.connector.cursor.DictCursor, column: str):
+    assert _new_task_row(dcur, "show tasks")[column]
 
 
 def test_show_tasks_predecessors_are_qualified(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -1065,12 +1076,16 @@ def test_show_terse_tasks_columns(cur: snowflake.connector.cursor.SnowflakeCurso
     ]
 
 
-def test_show_terse_tasks_row(dcur: snowflake.connector.cursor.DictCursor):
-    dcur.execute("create task t1 schedule = '5 minute' as select 1")
-    dcur.execute("show terse tasks")
-    (row,) = dcur.fetchall()
-    assert row.pop("created_on")
-    assert row == {"name": "T1", "kind": None, "database_name": "DB1", "schema_name": "SCHEMA1", "schedule": "5 minute"}
+@pytest.mark.parametrize(
+    "column, expected",
+    [("name", "T1"), ("kind", None), ("database_name", "DB1"), ("schema_name", "SCHEMA1"), ("schedule", "5 minute")],
+)
+def test_show_terse_tasks_row(dcur: snowflake.connector.cursor.DictCursor, column: str, expected: str | None):
+    assert _new_task_row(dcur, "show terse tasks")[column] == expected
+
+
+def test_show_terse_tasks_row_has_created_on(dcur: snowflake.connector.cursor.DictCursor):
+    assert _new_task_row(dcur, "show terse tasks")["created_on"]
 
 
 def test_show_tasks_orders_by_name(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -1586,12 +1601,31 @@ def test_execute_task_sets_last_committed_on(cur: snowflake.connector.cursor.Sno
     assert last_committed_on is not None
 
 
-def test_execute_task_history_succeeded_row(cur: snowflake.connector.cursor.SnowflakeCursor):
+@pytest.mark.parametrize(
+    "column, expected",
+    [
+        ("name", "T1"),
+        ("schema_name", "SCHEMA1"),
+        ("query_text", "select 1"),
+        ("state", "SUCCEEDED"),
+        ("error_code", None),
+        ("scheduled_from", "EXECUTE_TASK"),
+        ("attempt_number", 1),
+    ],
+)
+def test_execute_task_history_succeeded_row(
+    cur: snowflake.connector.cursor.SnowflakeCursor, column: str, expected: object
+):
     cur.execute("create task t1 as select 1")
     cur.execute("execute task t1")
-    assert _history(cur, "name, schema_name, query_text, state, error_code, scheduled_from, attempt_number") == [
-        ("T1", "SCHEMA1", "select 1", "SUCCEEDED", None, "EXECUTE_TASK", 1)
-    ]
+    assert _history(cur, column) == [(expected,)]
+
+
+def test_execute_task_history_failed_row_has_query_id(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select * from missing")
+    cur.execute("execute task t1")
+    ((query_id,),) = _history(cur, "query_id")
+    assert query_id is not None
 
 
 def test_execute_task_history_failed_row_state(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -2132,18 +2166,22 @@ def _table_function(cur: snowflake.connector.cursor.SnowflakeCursor, sql: str) -
     return [dict(zip(names, row, strict=True)) for row in cur.fetchall()]
 
 
-def test_task_history_succeeded_row(cur: snowflake.connector.cursor.SnowflakeCursor):
+@pytest.mark.parametrize(
+    "column, expected",
+    [
+        ("NAME", "T1"),
+        ("DATABASE_NAME", "DB1"),
+        ("SCHEMA_NAME", "SCHEMA1"),
+        ("QUERY_TEXT", "select 1"),
+        ("STATE", "SUCCEEDED"),
+        ("GRAPH_VERSION", 1),
+    ],
+)
+def test_task_history_succeeded_row(cur: snowflake.connector.cursor.SnowflakeCursor, column: str, expected: object):
     cur.execute("create task t1 as select 1")
     cur.execute("execute task t1")
     (row,) = _table_function(cur, "select * from table(information_schema.task_history())")
-    assert {k: row[k] for k in ("NAME", "DATABASE_NAME", "SCHEMA_NAME", "QUERY_TEXT", "STATE", "GRAPH_VERSION")} == {
-        "NAME": "T1",
-        "DATABASE_NAME": "DB1",
-        "SCHEMA_NAME": "SCHEMA1",
-        "QUERY_TEXT": "select 1",
-        "STATE": "SUCCEEDED",
-        "GRAPH_VERSION": 1,
-    }
+    assert row[column] == expected
 
 
 def test_task_history_columns(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -2283,18 +2321,17 @@ def test_task_history_survives_caller_rollback(cur: snowflake.connector.cursor.S
     assert cur.fetchall() == [("T1",)]
 
 
-def test_complete_task_graphs_failed_graph(cur: snowflake.connector.cursor.SnowflakeCursor):
+@pytest.mark.parametrize(
+    "column, expected",
+    [("ROOT_TASK_NAME", "ROOT"), ("DATABASE_NAME", "DB1"), ("STATE", "FAILED"), ("FIRST_ERROR_TASK_NAME", "CHILD")],
+)
+def test_complete_task_graphs_failed_graph(cur: snowflake.connector.cursor.SnowflakeCursor, column: str, expected: str):
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select * from missing")
     cur.execute("select system$task_dependents_enable('root')")
     cur.execute("execute task root")
     (row,) = _table_function(cur, "select * from table(information_schema.complete_task_graphs())")
-    assert {k: row[k] for k in ("ROOT_TASK_NAME", "DATABASE_NAME", "STATE", "FIRST_ERROR_TASK_NAME")} == {
-        "ROOT_TASK_NAME": "ROOT",
-        "DATABASE_NAME": "DB1",
-        "STATE": "FAILED",
-        "FIRST_ERROR_TASK_NAME": "CHILD",
-    }
+    assert row[column] == expected
 
 
 def test_complete_task_graphs_columns(cur: snowflake.connector.cursor.SnowflakeCursor):

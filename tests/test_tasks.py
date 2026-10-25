@@ -1676,6 +1676,14 @@ def test_set_return_value_inside_expression(cur: snowflake.connector.cursor.Snow
     assert _history(cur, "return_value") == [("done",)]
 
 
+def test_set_return_value_in_scalar_subquery(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table input_table (v varchar)")
+    cur.execute("insert into input_table values ('x')")
+    cur.execute("create task t1 as select (select system$set_return_value(v) from input_table limit 1)")
+    cur.execute("execute task t1")
+    assert _history(cur, "state, return_value") == [("SUCCEEDED", "x")]
+
+
 def test_set_return_value_stringifies_result(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 as select system$set_return_value(40 + 2)")
     cur.execute("execute task t1")

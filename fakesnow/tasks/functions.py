@@ -53,9 +53,17 @@ def task_functions(expression: Expr, context: TaskRunContext | None) -> Expr:
     """Replace the SYSTEM$ functions that read, or set, the state of the task run the statement is part of. Outside
     a task run they return NULL."""
     if context and isinstance(expression, exp.Select) and expression.parent is None:
-        call = next((c for c in expression.find_all(exp.Anonymous) if _name(c) == SET_RETURN_VALUE), None)
+        call = next(
+            (
+                c
+                for c in expression.find_all(exp.Anonymous)
+                if _name(c) == SET_RETURN_VALUE and c.find_ancestor(exp.Select) is expression
+            ),
+            None,
+        )
         if call and call.expressions:
-            # a column of its own, so the value is captured wherever the call is in the statement
+            # a column of its own, so the value is captured wherever the call is in the projection. a call in a
+            # subquery is out of the statement's scope, and leaves its value in the first column.
             value = exp.alias_(call.expressions[0].copy(), _RETURN_VALUE_COLUMN, quoted=True)
             expression.select(value, copy=False)
         return expression

@@ -388,6 +388,8 @@ class TaskCatalog:
                 raise _error(INVALID_FINALIZER.format(fqname=task.fqname, reason=reason), 2003, "02000")
         if self._has_cycle(task):
             raise _error(CYCLE.format(fqname=task.fqname), 2003, "02000")
+        if split := self._split_join(task):
+            raise _error(MIXED_GRAPHS.format(fqname=split.fqname), 2003, "02000")
         self._check_limits(task)
 
     def _has_cycle(self, task: Task) -> bool:
@@ -402,6 +404,31 @@ class TaskCatalog:
                 seen.add(name)
                 stack.extend(tasks[name].predecessors)
         return False
+
+    def _split_join(self, task: Task) -> Task | None:
+        """A dependent of the task that would have predecessors in different graphs once the task is saved, eg:
+        after one of its predecessors loses its own."""
+        tasks = {t.name: t for t in self._schema_tasks(task.database, task.schema_name)} | {task.name: task}
+
+        def root(name: str) -> str:
+            seen = {name}
+            while (t := tasks.get(name)) and (parent := t.finalize or next(iter(t.predecessors), None)):
+                if parent in seen:
+                    break
+                seen.add(parent)
+                name = parent
+            return name
+
+        pending, visited = [task.name], {task.name}
+        while pending:
+            name = pending.pop()
+            for child in tasks.values():
+                if name in child.predecessors and child.name not in visited:
+                    if len({root(p) for p in child.predecessors}) > 1:
+                        return child
+                    visited.add(child.name)
+                    pending.append(child.name)
+        return None
 
     def _check_limits(self, task: Task) -> None:
         limits = [(len(task.predecessors), MAX_PREDECESSORS, "predecessors", task)]

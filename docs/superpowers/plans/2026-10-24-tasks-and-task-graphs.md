@@ -543,7 +543,7 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
     `SCHEDULED_TIME` (fakesnow: when it became ready to run); a `WHEN` that raises (fakesnow: `FAILED`).
 17. `SYSTEM$` task functions (`fakesnow/tasks/functions.py`): `TASK_RUNTIME_INFO('CURRENT_TASK_NAME')` and
     `'CURRENT_ROOT_TASK_NAME'` return the fqname (fakesnow: `DB.SCHEMA.TASK`); `SYSTEM$CURRENT_USER_TASK_NAME()` returns
-    the bare name; the format of `'CURRENT_TASK_GRAPH_ORIGINAL_SCHEDULED_TIMESTAMP'` (fakesnow: UTC,
+    the fqname too, as the docs' example shows; the format of `'CURRENT_TASK_GRAPH_ORIGINAL_SCHEDULED_TIMESTAMP'` (fakesnow: UTC,
     `%Y-%m-%dT%H:%M:%S.%f%z`); `GET_PREDECESSOR_RETURN_VALUE()` with no argument and several predecessors (fakesnow:
     NULL).
 18. Task table functions (`fakesnow/tasks/history.py`): `RESULT_LIMIT` keeps the newest rows (default
@@ -563,3 +563,7 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
     `Task <fin> cannot depend on task <root> in a different schema.`
 23. A task with several predecessors, all suspended, doesn't run (per the docs); fakesnow also doesn't run its
     dependents, as if it had been skipped, which the docs don't say.
+24. Removing a predecessor so that a task downstream would have predecessors in different graphs — fakesnow rejects
+    it with `Task <downstream> cannot have predecessors in different task graphs.`
+25. `SYSTEM$GET_TASK_GRAPH_CONFIG(path)` follows a GET_PATH path (fakesnow: `a.b`, `a[0]`, `a['b']` and `"a.b"` steps,
+    case-sensitive keys, a string value unquoted and any other value as JSON).

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -39,6 +40,7 @@ _FUNCTIONS = {
     "SET_RETURN_VALUE",
 }
 _NULL = exp.Null()
+_PATH_STEP = re.compile(r"""\[(\d+)\]|\.?"((?:[^"]|"")*)"|\.?([^.\["]+)|\['((?:[^']|'')*)'\]""")
 # the column a top-level SELECT gets for the value given to SET_RETURN_VALUE, removed from its result
 _RETURN_VALUE_COLUMN = "_fs_return_value"
 
@@ -90,8 +92,7 @@ def _name(call: exp.Anonymous) -> str:
 def _read(function: str, args: list[Expr], context: TaskRunContext) -> str | None:
     arg = args[0].name if args else None
     if function == "CURRENT_USER_TASK_NAME":
-        # the bare name, where TASK_RUNTIME_INFO gives the fqname
-        return context.task.name
+        return context.task.fqname
     if function == "TASK_RUNTIME_INFO":
         return _runtime_info(arg, context)
     if function == "GET_TASK_GRAPH_CONFIG":
@@ -120,8 +121,28 @@ def _runtime_info(field: str | None, context: TaskRunContext) -> str | None:
             return None
 
 
-def _config(key: str | None, config: str | None) -> str | None:
-    if key is None or config is None:
+def _config(path: str | None, config: str | None) -> str | None:
+    if path is None or config is None:
         return config
-    value = json.loads(config).get(key)
-    return value if value is None or isinstance(value, str) else json.dumps(value)
+    value = json.loads(config)
+    pos = 0
+    # a GET_PATH path: keys, which can be quoted, separated by periods, and [index] or ['key'] subscripts
+    while pos < len(path):
+        step = _PATH_STEP.match(path, pos)
+        if step is None:
+            return None
+        pos = step.end()
+        index, quoted, key, subscript = step.groups()
+        if index is not None:
+            value = value[int(index)] if isinstance(value, list) and int(index) < len(value) else None
+        else:
+            if key is not None:
+                name = key
+            elif quoted is not None:
+                name = quoted.replace('""', '"')
+            else:
+                name = subscript.replace("''", "'")
+            value = value.get(name) if isinstance(value, dict) else None
+        if value is None:
+            return None
+    return value if isinstance(value, str) else json.dumps(value)

@@ -793,6 +793,18 @@ def test_alter_root_with_finalizer_add_after_raises(cur: snowflake.connector.cur
         cur.execute("alter task root add after parent")
 
 
+def test_alter_task_remove_after_splitting_join_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    cur.execute("create task a after root as select 1")
+    cur.execute("create task b after root as select 1")
+    cur.execute("create task c after a, b as select 1")
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"Task DB1\.SCHEMA1\.C cannot have predecessors in different task graphs\.",
+    ):
+        cur.execute("alter task a remove after root")
+
+
 def test_alter_task_set_schedule_on_child_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select 1")
@@ -1730,6 +1742,28 @@ def test_get_task_graph_config_key(cur: snowflake.connector.cursor.SnowflakeCurs
     assert cur.fetchall() == [("x",)]
 
 
+def _config_value(cur: snowflake.connector.cursor.SnowflakeCursor, config: str, path: str) -> list[tuple]:
+    """The value a task sees for SYSTEM$GET_TASK_GRAPH_CONFIG(path), given the graph's config."""
+    cur.execute("create or replace table seen (v varchar)")
+    body = f"insert into seen select system$get_task_graph_config('{path}')"
+    cur.execute(f"create or replace task t1 config = $${config}$$ as {body}")
+    cur.execute("execute task t1")
+    cur.execute("select v from seen")
+    return cur.fetchall()
+
+
+def test_get_task_graph_config_nested_path(cur: snowflake.connector.cursor.SnowflakeCursor):
+    assert _config_value(cur, '{"sink": {"table": "events"}}', "sink.table") == [("events",)]
+
+
+def test_get_task_graph_config_array_index_path(cur: snowflake.connector.cursor.SnowflakeCursor):
+    assert _config_value(cur, '{"dirs": ["a", "b"]}', "dirs[1]") == [("b",)]
+
+
+def test_get_task_graph_config_missing_path(cur: snowflake.connector.cursor.SnowflakeCursor):
+    assert _config_value(cur, '{"sink": {"table": "events"}}', "sink.missing") == [(None,)]
+
+
 def test_get_task_graph_config_using_config(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create table seen (v varchar)")
     cur.execute("""create task t1 config = '{"a": 1}' as insert into seen select system$get_task_graph_config()""")
@@ -1743,7 +1777,7 @@ def test_current_user_task_name(cur: snowflake.connector.cursor.SnowflakeCursor)
     cur.execute("create task t1 as insert into seen select system$current_user_task_name()")
     cur.execute("execute task t1")
     cur.execute("select v from seen")
-    assert cur.fetchall() == [("T1",)]
+    assert cur.fetchall() == [("DB1.SCHEMA1.T1",)]
 
 
 def test_task_runtime_info_current_root_task_name(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -1771,7 +1805,7 @@ def test_task_functions_match_case_insensitively(cur: snowflake.connector.cursor
     cur.execute("create task t1 as insert into seen select SYSTEM$Current_User_Task_Name()")
     cur.execute("execute task t1")
     cur.execute("select v from seen")
-    assert cur.fetchall() == [("T1",)]
+    assert cur.fetchall() == [("DB1.SCHEMA1.T1",)]
 
 
 @pytest.mark.parametrize(

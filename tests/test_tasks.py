@@ -2071,12 +2071,21 @@ def test_create_task_keeps_session_variable_in_body(cur: snowflake.connector.cur
     assert _show(cur, "definition") == [("select $v",)]
 
 
-def test_execute_task_with_session_variable_fails(cur: snowflake.connector.cursor.SnowflakeCursor):
+def _execute_task_with_session_variable(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
     cur.execute("set v = 'x'")
     cur.execute("create task t1 as select $v")
     cur.execute("execute task t1")
-    ((state, error_message),) = _history(cur, "state, error_message")
-    assert (state, error_message.endswith("Session variable '$V' does not exist")) == ("FAILED", True)
+
+
+def test_execute_task_with_session_variable_fails(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _execute_task_with_session_variable(cur)
+    assert _history(cur, "state") == [("FAILED",)]
+
+
+def test_execute_task_with_session_variable_error_message(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _execute_task_with_session_variable(cur)
+    ((error_message,),) = _history(cur, "error_message")
+    assert error_message.endswith("Session variable '$V' does not exist")
 
 
 def test_execute_task_scheduled_by_user(_fakesnow: None):

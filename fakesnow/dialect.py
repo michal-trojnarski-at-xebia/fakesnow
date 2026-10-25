@@ -6,6 +6,7 @@ import snowflake.connector.errors
 import sqlglot
 from sqlglot import Expr, exp
 from sqlglot.errors import ParseError
+from sqlglot.tokenizer_core import Token, TokenType
 
 _DESCRIBE_TASK = re.compile(r"\s*(?:DESC|DESCRIBE)\s+(?=TASK\b)", re.IGNORECASE)
 
@@ -14,8 +15,10 @@ def parse(command: str) -> list[Expr | None]:
     try:
         return sqlglot.parse(command, read="snowflake")
     except ParseError as error:
-        if describe := _describe_task(command):
-            return [describe]
+        statements = _statements(command)
+        if any(_describe_task(s) for s in statements):
+            # each statement on its own, so a DESCRIBE TASK can be anywhere in the command
+            return [_describe_task(s) or parse_one(s) for s in statements]
         raise syntax_error(error) from None
 
 
@@ -26,6 +29,17 @@ def parse_one(command: str) -> Expr:
         if describe := _describe_task(command):
             return describe
         raise syntax_error(error) from None
+
+
+def _statements(command: str) -> list[str]:
+    """The text of each statement in the command, split at the semicolons between them."""
+    statements: list[list[Token]] = [[]]
+    for token in sqlglot.tokenize(command, read="snowflake"):
+        if token.token_type == TokenType.SEMICOLON:
+            statements.append([])
+        else:
+            statements[-1].append(token)
+    return [command[tokens[0].start : tokens[-1].end + 1] for tokens in statements if tokens]
 
 
 def _describe_task(command: str) -> exp.Command | None:

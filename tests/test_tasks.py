@@ -1,5 +1,5 @@
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 import snowflake.connector
@@ -105,9 +105,14 @@ def test_create_task_owner_is_session_role(_fakesnow: None):
         assert _show(cur, "owner") == [("SYSADMIN",)]
 
 
-def test_create_task_stores_column_properties(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("create task t1 warehouse = wh schedule = '5 minute' as select 1")
-    assert _show(cur, "warehouse, schedule") == [("WH", "5 minute")]
+def test_create_task_stores_warehouse(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 warehouse = wh as select 1")
+    assert _show(cur, "warehouse") == [("WH",)]
+
+
+def test_create_task_stores_schedule(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 schedule = '5 minute' as select 1")
+    assert _show(cur, "schedule") == [("5 minute",)]
 
 
 def test_create_task_stores_session_parameters(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -1179,6 +1184,18 @@ def test_describe_task_via_execute_string(conn: snowflake.connector.SnowflakeCon
     assert [d.name for d in cur.description] == SHOW_TASKS_COLUMNS
 
 
+def test_describe_task_then_another_statement_via_execute_string(conn: snowflake.connector.SnowflakeConnection):
+    conn.cursor().execute("create task t1 as select 1")
+    _, cur = conn.execute_string("desc task t1; select 1")
+    assert cur.fetchall() == [(1,)]
+
+
+def test_describe_task_after_another_statement_via_execute_string(conn: snowflake.connector.SnowflakeConnection):
+    conn.cursor().execute("create task t1 as select 1")
+    _, cur = conn.execute_string("select 1; desc task t1")
+    assert [d.name for d in cur.description] == SHOW_TASKS_COLUMNS
+
+
 def test_describe_missing_task_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
     with pytest.raises(snowflake.connector.errors.ProgrammingError, match=r"Task 'DB1\.SCHEMA1\.NOPE' does not exist"):
         cur.execute("describe task nope")
@@ -2163,6 +2180,16 @@ def test_task_history_unqualified_in_information_schema(cur: snowflake.connector
     with snowflake.connector.connect(database="db1", schema="information_schema") as conn, conn.cursor() as info:
         info.execute("select name from table(task_history())")
         assert info.fetchall() == [("T1",)]
+
+
+def test_complete_task_graphs_excludes_runs_older_than_an_hour(
+    cur: snowflake.connector.cursor.SnowflakeCursor, monkeypatch: pytest.MonkeyPatch
+):
+    cur.execute("create task t1 as select 1")
+    monkeypatch.setattr("fakesnow.tasks.runner.now", lambda: datetime.now().astimezone() - timedelta(minutes=61))
+    cur.execute("execute task t1")
+    cur.execute("select count(*) from table(information_schema.complete_task_graphs())")
+    assert cur.fetchall() == [(0,)]
 
 
 def test_complete_task_graphs_default_result_limit(cur: snowflake.connector.cursor.SnowflakeCursor):

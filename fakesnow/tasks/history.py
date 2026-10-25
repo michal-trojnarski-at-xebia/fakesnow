@@ -207,8 +207,12 @@ def _complete_task_graphs(
         {"RESULT_LIMIT", "ROOT_TASK_NAME", "ERROR_ONLY"},
         default_limit=COMPLETE_TASK_GRAPHS_RESULT_LIMIT,
     )
-    # a run whose root was skipped has no row
-    filters = [*_filters(args, {"ROOT_TASK_NAME": "root_task_name"}), "state != 'SKIPPED'"]
+    # a run whose root was skipped has no row, and only the runs completed in the past 60 minutes are returned
+    filters = [
+        *_filters(args, {"ROOT_TASK_NAME": "root_task_name"}),
+        "state != 'SKIPPED'",
+        "completed_time >= current_timestamp - interval 60 minute",
+    ]
     columns = _GRAPH_COLUMNS.format(graph_version=GRAPH_VERSION)
     return _select(columns, graph_runs_table, databases, filters, args)
 

@@ -1382,6 +1382,7 @@ def test_show_tasks_limit(cur: snowflake.connector.cursor.SnowflakeCursor):
 def test_show_tasks_limit_from(cur: snowflake.connector.cursor.SnowflakeCursor):
     for name in ("a", "b", "c"):
         cur.execute(f"create task {name} as select 1")
+    # the FROM name itself is included, despite the docs saying "following", as live Snowflake does
     assert _show_names(cur, "show tasks limit 1 from 'B'") == ["B"]
 
 

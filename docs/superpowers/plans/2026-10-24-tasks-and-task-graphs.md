@@ -22,8 +22,8 @@ same `FakeSnow` instance.
 - Tests assert live Snowflake behaviour (AGENTS.md). Values the docs don't pin are provisional: each is a named
   constant in the module that owns it and is listed under "Live checks" at the end, to verify with `snowflake-check`.
 - One behaviour per test (AGENTS.md "Keep tests behavior-focused"). JSON/VARIANT results compared as strings use
-  `tests.utils.indent`/`dindent`, except text columns Snowflake renders compact or as written, eg: `task_relations`
-  and TASK_HISTORY `CONFIG`, which are compared as Snowflake returns them.
+  `tests.utils.indent`/`dindent`, including text columns Snowflake renders compact, eg: `task_relations` and
+  TASK_HISTORY `CONFIG`.
 - Task logic lives in `fakesnow/tasks/`; the cursor only dispatches to it (spec anti-goal "Spreading responsibility
   across callers").
 - Task definitions and history are stored per database under `<db>._fs_information_schema`, never in `_fs_global`.

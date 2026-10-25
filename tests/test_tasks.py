@@ -9,7 +9,7 @@ import snowflake.connector.cursor
 import fakesnow
 from fakesnow.conn import FakeSnowflakeConnection
 from fakesnow.instance import FakeSnow
-from tests.utils import indent
+from tests.utils import dindent, indent
 
 
 # stored session parameters have no live-visible equivalent (SHOW PARAMETERS IN TASK isn't implemented)
@@ -492,7 +492,7 @@ def test_drop_root_clears_finalizer_relation(cur: snowflake.connector.cursor.Sno
     cur.execute("create task root as select 1")
     cur.execute("create task fin finalize = root as select 1")
     cur.execute("drop task root")
-    assert _show(cur, "task_relations", "fin") == [('{"Predecessors":[]}',)]
+    assert indent(_show(cur, "task_relations", "fin")) == [('{\n  "Predecessors": []\n}',)]
 
 
 def test_drop_task_in_started_graph_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -929,8 +929,9 @@ def test_alter_task_set_finalize(cur: snowflake.connector.cursor.SnowflakeCursor
     cur.execute("create task root as select 1")
     cur.execute("create task fin as select 1")
     cur.execute("alter task fin set finalize = root")
-    # compact, as Snowflake renders it
-    assert _show(cur, "task_relations", "fin") == [('{"FinalizedRootTask":"DB1.SCHEMA1.ROOT","Predecessors":[]}',)]
+    assert indent(_show(cur, "task_relations", "fin")) == [
+        ('{\n  "FinalizedRootTask": "DB1.SCHEMA1.ROOT",\n  "Predecessors": []\n}',)
+    ]
 
 
 def test_alter_task_set_finalize_of_non_root_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -967,8 +968,11 @@ def test_alter_root_with_finalizer_set_finalize_relations(cur: snowflake.connect
     cur.execute("create task root as select 1")
     cur.execute("create task fin finalize = root as select 1")
     cur.execute("alter task root set finalize = other")
-    assert _show(cur, "task_relations", "root") == [
-        ('{"FinalizedRootTask":"DB1.SCHEMA1.OTHER","Predecessors":[],"FinalizerTask":"DB1.SCHEMA1.FIN"}',)
+    assert indent(_show(cur, "task_relations", "root")) == [
+        (
+            '{\n  "FinalizedRootTask": "DB1.SCHEMA1.OTHER",\n  "Predecessors": [],\n'
+            '  "FinalizerTask": "DB1.SCHEMA1.FIN"\n}',
+        )
     ]
 
 
@@ -1012,7 +1016,7 @@ def test_alter_task_unset_finalize_clears_finalizer_relation(cur: snowflake.conn
     cur.execute("create task root as select 1")
     cur.execute("create task fin finalize = root as select 1")
     cur.execute("alter task fin unset finalize")
-    assert _show(cur, "task_relations", "fin") == [('{"Predecessors":[]}',)]
+    assert indent(_show(cur, "task_relations", "fin")) == [('{\n  "Predecessors": []\n}',)]
 
 
 def test_alter_task_modify_as(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -1222,8 +1226,7 @@ _NEW_TASK_ROW = {
     "last_suspended_on": None,
     "owner_role_type": "ROLE",
     "config": None,
-    # compact, as Snowflake renders it
-    "task_relations": '{"Predecessors":[]}',
+    "task_relations": '{\n  "Predecessors": []\n}',
     "last_suspended_reason": None,
     "success_integration": "null",
     "scheduling_mode": None,
@@ -1243,7 +1246,7 @@ def _new_task_row(dcur: snowflake.connector.cursor.DictCursor, show: str) -> dic
 
 @pytest.mark.parametrize("column, expected", _NEW_TASK_ROW.items())
 def test_show_tasks_new_task_row(dcur: snowflake.connector.cursor.DictCursor, column: str, expected: str | None):
-    assert _new_task_row(dcur, "show tasks")[column] == expected
+    assert dindent([_new_task_row(dcur, "show tasks")])[0][column] == expected
 
 
 @pytest.mark.parametrize("column", ["created_on", "id"])
@@ -1286,19 +1289,25 @@ def test_show_tasks_created_by_user(_fakesnow: None):
 def test_show_tasks_task_relations_for_root_with_finalizer(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     cur.execute("create task fin finalize = root as select 1")
-    assert _show(cur, "task_relations", "root") == [('{"Predecessors":[],"FinalizerTask":"DB1.SCHEMA1.FIN"}',)]
+    assert indent(_show(cur, "task_relations", "root")) == [
+        ('{\n  "Predecessors": [],\n  "FinalizerTask": "DB1.SCHEMA1.FIN"\n}',)
+    ]
 
 
 def test_show_tasks_task_relations_for_finalizer(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     cur.execute("create task fin finalize = root as select 1")
-    assert _show(cur, "task_relations", "fin") == [('{"FinalizedRootTask":"DB1.SCHEMA1.ROOT","Predecessors":[]}',)]
+    assert indent(_show(cur, "task_relations", "fin")) == [
+        ('{\n  "FinalizedRootTask": "DB1.SCHEMA1.ROOT",\n  "Predecessors": []\n}',)
+    ]
 
 
 def test_show_tasks_task_relations_for_child(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select 1")
-    assert _show(cur, "task_relations", "child") == [('{"Predecessors":["DB1.SCHEMA1.ROOT"]}',)]
+    assert indent(_show(cur, "task_relations", "child")) == [
+        ('{\n  "Predecessors": [\n    "DB1.SCHEMA1.ROOT"\n  ]\n}',)
+    ]
 
 
 def test_show_tasks_target_completion_interval(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -2009,20 +2018,21 @@ def test_execute_task_history_root_task_id_shared(cur: snowflake.connector.curso
 def test_execute_task_using_config_merges_config(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("""create task t1 config = '{"a": 1}' as select 1""")
     cur.execute("""execute task t1 using config = '{"b": 2}'""")
-    # compact, as Snowflake renders a merged config
-    assert _history(cur, "config") == [('{"a":1,"b":2}',)]
+    assert indent(_history(cur, "config")) == [('{\n  "a": 1,\n  "b": 2\n}',)]
 
 
 def test_execute_task_using_config_overrides_matching_field(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("""create task t1 config = '{"a": 1}' as select 1""")
     cur.execute("""execute task t1 using config = '{"a": 2}'""")
-    assert _history(cur, "config") == [('{"a":2}',)]
+    assert indent(_history(cur, "config")) == [('{\n  "a": 2\n}',)]
 
 
 def test_execute_task_using_config_merges_nested_fields(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("""create task t1 config = '{"env": "prod", "paths": {"logs": "l", "results": "r"}}' as select 1""")
     cur.execute("""execute task t1 using config = '{"paths": {"results": "t"}}'""")
-    assert _history(cur, "config") == [('{"env":"prod","paths":{"logs":"l","results":"t"}}',)]
+    assert indent(_history(cur, "config")) == [
+        ('{\n  "env": "prod",\n  "paths": {\n    "logs": "l",\n    "results": "t"\n  }\n}',)
+    ]
 
 
 def test_create_task_keeps_session_variable_in_body(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -2381,14 +2391,18 @@ def test_predecessor_return_value_suspended_predecessor_name_fails(cur: snowflak
 
 def test_predecessor_return_value_unmatched_name_error(cur: snowflake.connector.cursor.SnowflakeCursor):
     _unmatched_predecessor_lookup(cur)
-    assert _history(cur, "error_code, error_message", "child") == [
+    assert _history(cur, "error_message", "child") == [
         (
-            "091451",
             "The predecessor root specified in call to system$get_predecessor_return_value() is not a valid or active "
             "predecessor for this task. Note that system$get_predecessor_return_value() does not support fully "
             "qualified names including database or schema.",
         )
     ]
+
+
+def test_predecessor_return_value_unmatched_name_error_code(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _unmatched_predecessor_lookup(cur)
+    assert _history(cur, "error_code", "child") == [("091451",)]
 
 
 def test_predecessor_return_value_unmatched_name_fails(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -2466,8 +2480,8 @@ def test_get_task_graph_config_array_index_path(cur: snowflake.connector.cursor.
     assert _config_value(cur, '{"dirs": ["a", "b"]}', "dirs[1]") == [("b",)]
 
 
-def test_get_task_graph_config_object_path_is_compact(cur: snowflake.connector.cursor.SnowflakeCursor):
-    assert _config_value(cur, '{"o": {"p": 1}}', "o") == [('{"p":1}',)]
+def test_get_task_graph_config_object_path(cur: snowflake.connector.cursor.SnowflakeCursor):
+    assert indent(_config_value(cur, '{"o": {"p": 1}}', "o")) == [('{\n  "p": 1\n}',)]
 
 
 def test_get_task_graph_config_missing_path(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -2592,9 +2606,16 @@ def test_get_predecessor_return_value_without_argument_and_several_predecessors_
     cur: snowflake.connector.cursor.SnowflakeCursor,
 ):
     _ambiguous_predecessor_lookup(cur)
-    assert _history(cur, "error_code, error_message", "c") == [
-        ("091450", "No predecessor task specified in call to system$get_predecessor_return_value().")
+    assert _history(cur, "error_message", "c") == [
+        ("No predecessor task specified in call to system$get_predecessor_return_value().",)
     ]
+
+
+def test_get_predecessor_return_value_without_argument_and_several_predecessors_error_code(
+    cur: snowflake.connector.cursor.SnowflakeCursor,
+):
+    _ambiguous_predecessor_lookup(cur)
+    assert _history(cur, "error_code", "c") == [("091450",)]
 
 
 def test_get_predecessor_return_value_without_argument_and_several_predecessors_fails(

@@ -1084,7 +1084,7 @@ def test_show_tasks_limit(cur: snowflake.connector.cursor.SnowflakeCursor):
 def test_show_tasks_limit_from(cur: snowflake.connector.cursor.SnowflakeCursor):
     for name in ("a", "b", "c"):
         cur.execute(f"create task {name} as select 1")
-    assert _show_names(cur, "show tasks limit 1 from 'B'") == ["B"]
+    assert _show_names(cur, "show tasks limit 1 from 'B'") == ["C"]
 
 
 def test_show_tasks_defaults_to_current_database(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -1684,7 +1684,7 @@ def test_set_return_value_stringifies_result(cur: snowflake.connector.cursor.Sno
 
 def test_predecessor_return_value_in_child(cur: snowflake.connector.cursor.SnowflakeCursor):
     _create_root_returning_value(cur)
-    cur.execute("create task child after root as insert into seen select system$get_predecessor_return_value('root')")
+    cur.execute("create task child after root as insert into seen select system$get_predecessor_return_value('ROOT')")
     cur.execute("select system$task_dependents_enable('root')")
     cur.execute("execute task root")
     cur.execute("select v from seen")
@@ -1694,7 +1694,7 @@ def test_predecessor_return_value_in_child(cur: snowflake.connector.cursor.Snowf
 def test_predecessor_return_value_from_ancestor(cur: snowflake.connector.cursor.SnowflakeCursor):
     _create_root_returning_value(cur)
     cur.execute("create task mid after root as select 1")
-    cur.execute("create task leaf after mid as insert into seen select system$get_predecessor_return_value('root')")
+    cur.execute("create task leaf after mid as insert into seen select system$get_predecessor_return_value('ROOT')")
     cur.execute("select system$task_dependents_enable('root')")
     cur.execute("execute task root")
     cur.execute("select v from seen")
@@ -1705,7 +1705,7 @@ def test_set_return_value_passes_on_predecessor_value_with_suffix(cur: snowflake
     _create_root_returning_value(cur)
     cur.execute(
         "create task child after root as "
-        "select system$set_return_value(system$get_predecessor_return_value('root') || 'y')"
+        "select system$set_return_value(system$get_predecessor_return_value('ROOT') || 'y')"
     )
     cur.execute("select system$task_dependents_enable('root')")
     cur.execute("execute task root")
@@ -1726,7 +1726,7 @@ def test_predecessor_return_value_quoted_name(cur: snowflake.connector.cursor.Sn
     cur.execute("""create task "My Root" as select system$set_return_value('quoted')""")
     cur.execute(
         """create task child after "My Root" as
-        insert into seen select system$get_predecessor_return_value('"My Root"')"""
+        insert into seen select system$get_predecessor_return_value('My Root')"""
     )
     cur.execute("""select system$task_dependents_enable('"My Root"')""")
     cur.execute('execute task "My Root"')
@@ -1734,12 +1734,36 @@ def test_predecessor_return_value_quoted_name(cur: snowflake.connector.cursor.Sn
     assert cur.fetchall() == [("quoted",)]
 
 
+def test_predecessor_return_value_name_is_case_sensitive(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _create_root_returning_value(cur)
+    cur.execute("create task child after root as insert into seen select system$get_predecessor_return_value('root')")
+    cur.execute("select system$task_dependents_enable('root')")
+    cur.execute("execute task root")
+    cur.execute("select v from seen")
+    assert cur.fetchall() == [(None,)]
+
+
+def test_predecessor_return_value_without_argument_and_one_enabled_predecessor(
+    cur: snowflake.connector.cursor.SnowflakeCursor,
+):
+    cur.execute("create table seen (v varchar)")
+    cur.execute("create task root as select 1")
+    cur.execute("create task a after root as select system$set_return_value('from a')")
+    cur.execute("create task b after root as select 1")
+    cur.execute("create task c after a, b as insert into seen select system$get_predecessor_return_value()")
+    cur.execute("alter task a resume")
+    cur.execute("alter task c resume")
+    cur.execute("execute task root")
+    cur.execute("select v from seen")
+    assert cur.fetchall() == [("from a",)]
+
+
 def test_predecessor_return_value_in_when(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create table seen (v varchar)")
     cur.execute("create task root as select system$set_return_value('go')")
     cur.execute(
         """create task child after root
-        when system$get_predecessor_return_value('root') = 'go'
+        when system$get_predecessor_return_value('ROOT') = 'go'
         as insert into seen values ('ran')"""
     )
     cur.execute("select system$task_dependents_enable('root')")

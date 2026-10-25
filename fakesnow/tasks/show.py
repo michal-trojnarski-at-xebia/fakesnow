@@ -127,7 +127,8 @@ def show_tasks_sql(
     if stmt.root_only:
         filters.append("predecessors = '[]'")
     if stmt.limit_from is not None:
-        filters.append(f"name >= {_literal(stmt.limit_from)}")
+        # the rows following the name, so a client can page on from the last name it saw
+        filters.append(f"name > {_literal(stmt.limit_from)}")
 
     rows = " union all ".join(rows_sql(d) for d in databases)
     where = f" where {' and '.join(filters)}" if filters else ""

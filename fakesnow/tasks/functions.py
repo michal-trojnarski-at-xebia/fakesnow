@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING
 from sqlglot import Expr, exp
 
 from fakesnow.tasks.catalog import Task
-from fakesnow.tasks.statements import parse_task_name
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -103,8 +102,8 @@ def _read(function: str, args: list[Expr], context: TaskRunContext) -> str | Non
     values = context.predecessor_return_values
     if arg is None:
         return next(iter(values.values())) if len(values) == 1 else None  # ambiguous with several
-    name = parse_task_name(arg).name
-    return values[name] if name in values else context.ancestor_return_values.get(name)
+    # matched as given, as task names are case-sensitive here
+    return values[arg] if arg in values else context.ancestor_return_values.get(arg)
 
 
 def _runtime_info(field: str | None, context: TaskRunContext) -> str | None:

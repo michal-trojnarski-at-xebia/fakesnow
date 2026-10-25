@@ -568,3 +568,6 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
     it with `Task <downstream> cannot have predecessors in different task graphs.`
 25. `SYSTEM$GET_TASK_GRAPH_CONFIG(path)` follows a GET_PATH path (fakesnow: `a.b`, `a[0]`, `a['b']` and `"a.b"` steps,
     case-sensitive keys, a string value unquoted and any other value as JSON).
+26. `SHOW TASKS ... LIMIT n FROM 'name'` returns the rows following the name (fakesnow: `name > 'name'`, also for a
+    partial name); `SYSTEM$GET_PREDECESSOR_RETURN_VALUE('name')` matches the name case-sensitively, as the docs say,
+    and a name matching no enabled predecessor or ancestor gives NULL (the docs say the call fails).

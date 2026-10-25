@@ -1667,11 +1667,17 @@ def test_execute_task_history_failed_row_state(cur: snowflake.connector.cursor.S
     assert _history(cur, "state") == [("FAILED",)]
 
 
-def test_execute_task_history_failed_row_has_error(cur: snowflake.connector.cursor.SnowflakeCursor):
+def test_execute_task_history_failed_row_has_error_code(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 as select * from missing")
     cur.execute("execute task t1")
-    ((error_code, error_message),) = _history(cur, "error_code, error_message")
-    assert (error_code, "MISSING" in error_message) == (2003, True)
+    assert _history(cur, "error_code") == [(2003,)]
+
+
+def test_execute_task_history_failed_row_has_error_message(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select * from missing")
+    cur.execute("execute task t1")
+    ((error_message,),) = _history(cur, "error_message")
+    assert "MISSING" in error_message
 
 
 @pytest.mark.parametrize("column, expected", [("state", "SKIPPED"), ("condition_text", "1 = 2"), ("query_id", None)])
@@ -2305,11 +2311,18 @@ def test_task_history_failed_row_state(cur: snowflake.connector.cursor.Snowflake
     assert row["STATE"] == "FAILED"
 
 
-def test_task_history_failed_row_has_error(cur: snowflake.connector.cursor.SnowflakeCursor):
+def test_task_history_failed_row_has_error_code(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 as select * from missing")
     cur.execute("execute task t1")
     (row,) = _table_function(cur, "select * from table(information_schema.task_history())")
-    assert (row["ERROR_CODE"], "MISSING" in row["ERROR_MESSAGE"]) == (2003, True)
+    assert row["ERROR_CODE"] == 2003
+
+
+def test_task_history_failed_row_has_error_message(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select * from missing")
+    cur.execute("execute task t1")
+    (row,) = _table_function(cur, "select * from table(information_schema.task_history())")
+    assert "MISSING" in row["ERROR_MESSAGE"]
 
 
 def test_task_history_database_qualified(cur: snowflake.connector.cursor.SnowflakeCursor):

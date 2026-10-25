@@ -1869,6 +1869,15 @@ def test_set_return_value_in_insert_inserts_value(cur: snowflake.connector.curso
     assert cur.fetchall() == [("done",)]
 
 
+def test_set_return_value_evaluates_argument_once(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table seen (v varchar)")
+    cur.execute("create task t1 as insert into seen select system$set_return_value(random()::varchar)")
+    cur.execute("execute task t1")
+    cur.execute("select v from seen")
+    inserted = cur.fetchall()
+    assert _history(cur, "return_value") == inserted
+
+
 def test_set_return_value_stringifies_result(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 as select system$set_return_value(40 + 2)")
     cur.execute("execute task t1")

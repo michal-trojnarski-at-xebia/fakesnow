@@ -74,12 +74,11 @@ def task_functions(expression: Expr, context: TaskRunContext | None) -> Expr:
         # a replacement isn't descended into by the transform, so replace the task functions nested in the value
         value = args[0].copy().transform(lambda e: task_functions(e, context))
         _RUNS[context.key] = context
-        # the value, once it's recorded, wherever the call is in the statement, eg: in the SELECT of an INSERT
-        capture = exp.Anonymous(
-            this=_CAPTURE,
-            expressions=[exp.Literal.string(context.key), exp.cast(value.copy(), exp.DataType.Type.VARCHAR)],
+        # the string value, recorded as it's evaluated wherever the call is in the statement, eg: in the SELECT of an
+        # INSERT, and returned
+        return exp.Anonymous(
+            this=_CAPTURE, expressions=[exp.Literal.string(context.key), exp.cast(value, exp.DataType.Type.VARCHAR)]
         )
-        return exp.Case(ifs=[exp.If(this=capture, true=value)])
     value = _read(name[len(_PREFIX) :], args, context) if context else None
     return _NULL.copy() if value is None else exp.Literal.string(value)
 
@@ -87,14 +86,14 @@ def task_functions(expression: Expr, context: TaskRunContext | None) -> Expr:
 def register_capture(duck_conn: DuckDBPyConnection) -> None:
     """Register the function SET_RETURN_VALUE calls are replaced by, in a new instance."""
     duck_conn.create_function(
-        _CAPTURE, _capture, ["VARCHAR", "VARCHAR"], "BOOLEAN", null_handling=SPECIAL, side_effects=True
+        _CAPTURE, _capture, ["VARCHAR", "VARCHAR"], "VARCHAR", null_handling=SPECIAL, side_effects=True
     )
 
 
-def _capture(key: str, value: str | None) -> bool:
+def _capture(key: str, value: str | None) -> str | None:
     if context := _RUNS.get(key):
         context.set_values.append(value)
-    return True
+    return value
 
 
 def store_return_value(context: TaskRunContext | None) -> None:

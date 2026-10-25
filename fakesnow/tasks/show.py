@@ -134,4 +134,4 @@ def show_tasks_sql(
     where = f" where {' and '.join(filters)}" if filters else ""
     limit = f" limit {stmt.limit}" if stmt.limit is not None else ""
     columns = _TERSE_COLUMNS if stmt.terse else "*"
-    return f"select {columns} from ({rows}) {where} order by name, database_name, schema_name{limit}"
+    return f"select {columns} from ({rows}) {where} order by database_name, schema_name, name{limit}"

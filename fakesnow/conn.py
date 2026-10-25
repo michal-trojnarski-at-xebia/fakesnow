@@ -196,9 +196,10 @@ class FakeSnowflakeConnection:
         return self._is_closed
 
     def open_session(
-        self, database: str, schema: str, role: str, session_parameters: dict[str, str]
+        self, database: str, schema: str, role: str, warehouse: str | None, session_parameters: dict[str, str]
     ) -> FakeSnowflakeConnection:
-        """Open a new session on the same instance, with its own current database, schema, role and transaction."""
+        """Open a new session on the same instance, with its own current database, schema, role, warehouse and
+        transaction."""
         if self._instance is None:
             raise NotImplementedError(NO_INSTANCE)
         session = self._instance.connect(
@@ -206,6 +207,7 @@ class FakeSnowflakeConnection:
         )
         # as given, not normalised again, so a quoted name keeps its case
         session.database, session._schema, session.role = database, schema, role  # noqa: SLF001
+        session.warehouse = warehouse
         return session
 
     def rollback(self) -> None:

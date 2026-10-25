@@ -1148,7 +1148,7 @@ def test_show_tasks_in_account(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("use schema db1.schema1")
     cur.execute("create task db2.schema1.other as select 1")
     cur.execute("create task t1 as select 1")
-    assert _show_names(cur, "show tasks in account") == ["OTHER", "T1"]
+    assert _show_names(cur, "show tasks in account") == ["T1", "OTHER"]
 
 
 def test_show_tasks_without_current_database_uses_account(_fakesnow: None):
@@ -1565,6 +1565,14 @@ def test_execute_task_in_quoted_schema_finds_sibling(cur: snowflake.connector.cu
     cur.execute("create task t as alter task sibling set comment = 'done'")
     cur.execute("execute task t")
     assert _show(cur, "comment", "sibling") == [("done",)]
+
+
+def test_execute_task_session_uses_task_warehouse(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table seen (v varchar)")
+    cur.execute("create task t1 warehouse = wh as insert into seen select current_warehouse()")
+    cur.execute("execute task t1")
+    cur.execute("select v from seen")
+    assert cur.fetchall() == [("WH",)]
 
 
 def test_execute_task_runs_siblings_by_name(cur: snowflake.connector.cursor.SnowflakeCursor, log: None):

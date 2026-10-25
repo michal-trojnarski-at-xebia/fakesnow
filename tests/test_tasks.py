@@ -171,7 +171,7 @@ def test_create_task_clone_by_other_role_has_no_predecessors(_fakesnow: None):
         cur.execute("create task child after root as select 1")
     with snowflake.connector.connect(database="db1", schema="schema1", role="ANALYST") as conn, conn.cursor() as cur:
         cur.execute("create task copy clone child")
-        assert _show(cur, "predecessors", "copy") == [("[]",)]
+        assert indent(_show(cur, "predecessors", "copy")) == [("[]",)]
 
 
 def test_create_task_clone_missing_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -437,7 +437,7 @@ def test_drop_only_predecessor_clears_child_predecessors(cur: snowflake.connecto
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select 1")
     cur.execute("drop task root")
-    assert _show(cur, "predecessors", "child") == [("[]",)]
+    assert indent(_show(cur, "predecessors", "child")) == [("[]",)]
 
 
 def test_drop_root_makes_finalizer_standalone(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -806,7 +806,7 @@ def test_alter_task_remove_last_predecessor_clears_predecessors(cur: snowflake.c
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select 1")
     cur.execute("alter task child remove after root")
-    assert _show(cur, "predecessors", "child") == [("[]",)]
+    assert indent(_show(cur, "predecessors", "child")) == [("[]",)]
 
 
 def test_alter_task_remove_after_started_root_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -1287,6 +1287,13 @@ def test_describe_task_columns(cur: snowflake.connector.cursor.SnowflakeCursor):
 def test_describe_task_after_leading_comment(cur: snowflake.connector.cursor.SnowflakeCursor, comment: str):
     cur.execute("create task t1 as select 1")
     cur.execute(f"{comment}desc task t1")
+    assert [d.name for d in cur.description] == SHOW_TASKS_COLUMNS
+
+
+@pytest.mark.parametrize("comment", ["/* inspect */", "-- inspect\n"])
+def test_describe_task_with_comment_between_keywords(cur: snowflake.connector.cursor.SnowflakeCursor, comment: str):
+    cur.execute("create task t1 as select 1")
+    cur.execute(f"desc {comment} task t1")
     assert [d.name for d in cur.description] == SHOW_TASKS_COLUMNS
 
 

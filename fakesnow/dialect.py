@@ -1,14 +1,12 @@
 """Parse Snowflake SQL with Snowflake-compatible syntax errors."""
 
-import re
-
 import snowflake.connector.errors
 import sqlglot
 from sqlglot import Expr, exp
 from sqlglot.errors import ParseError
 from sqlglot.tokenizer_core import Token, TokenType
 
-_DESCRIBE_TASK = re.compile(r"\s*(?:DESC|DESCRIBE)\s+(?=TASK\b)", re.IGNORECASE)
+_DESCRIBE = {"DESC", "DESCRIBE"}
 
 
 def parse(command: str) -> list[Expr | None]:
@@ -47,8 +45,10 @@ def _statements(command: str) -> list[str]:
 
 def _describe_task(command: str) -> exp.Command | None:
     """sqlglot can't parse DESCRIBE TASK, so hand it on as a command like the other task statements."""
-    if match := _DESCRIBE_TASK.match(command):
-        return exp.Command(this="DESCRIBE", expression=exp.Literal.string(command[match.end() :].strip()))
+    # by token, so comments can be anywhere in it
+    tokens = sqlglot.tokenize(command, read="snowflake")
+    if len(tokens) > 2 and tokens[0].text.upper() in _DESCRIBE and tokens[1].text.upper() == "TASK":
+        return exp.Command(this="DESCRIBE", expression=exp.Literal.string(command[tokens[1].start :].strip()))
     return None
 
 

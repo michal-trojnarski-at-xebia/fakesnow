@@ -1538,10 +1538,16 @@ def test_execute_task_graph_run_failed_records_first_error(cur: snowflake.connec
     assert _graph_runs(cur, "state, first_error_task_name, first_error_code") == [("FAILED", "CHILD", 2003)]
 
 
-def test_execute_task_graph_run_skipped_when_root_skipped(cur: snowflake.connector.cursor.SnowflakeCursor):
+def test_complete_task_graphs_excludes_skipped_root(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root when 1 = 2 as select 1")
     cur.execute("execute task root")
-    assert _graph_runs(cur, "state") == [("SKIPPED",)]
+    assert _graph_runs(cur, "state") == []
+
+
+def test_task_history_keeps_skipped_root(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root when 1 = 2 as select 1")
+    cur.execute("execute task root")
+    assert _history(cur, "state") == [("SKIPPED",)]
 
 
 def _run_and_drop_schema(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
@@ -2129,6 +2135,24 @@ def test_task_history_unqualified_in_information_schema(cur: snowflake.connector
     with snowflake.connector.connect(database="db1", schema="information_schema") as conn, conn.cursor() as info:
         info.execute("select name from table(task_history())")
         assert info.fetchall() == [("T1",)]
+
+
+def test_complete_task_graphs_default_result_limit(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select 1")
+    for _ in range(101):
+        cur.execute("execute task t1")
+    cur.execute("select count(*) from table(information_schema.complete_task_graphs())")
+    assert cur.fetchall() == [(101,)]
+
+
+def test_task_history_quoted_schema_name_matches_case_sensitively(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute('create schema "Mixed"')
+    cur.execute("create task t1 as select 1")
+    cur.execute("execute task t1")
+    cur.execute(
+        "select name from table(information_schema.task_history(database_name => 'DB1', schema_name => '\"Mixed\"'))"
+    )
+    assert cur.fetchall() == [("T1",)]
 
 
 def _runs_in_two_databases(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:

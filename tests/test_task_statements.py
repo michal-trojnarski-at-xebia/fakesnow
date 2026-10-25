@@ -30,10 +30,15 @@ def test_parse_create_task_with_schedule_and_body():
     )
 
 
-def test_parse_create_task_name_and_replace():
-    s = parse_task_statement('create or replace task db1.s1."Child" after a as select 1')
+def test_parse_create_task_qualified_quoted_name():
+    s = parse_task_statement('create task db1.s1."Child" after a as select 1')
     assert isinstance(s, CreateTask)
     assert s.name == TaskName("DB1", "S1", "Child")
+
+
+def test_parse_create_or_replace_task():
+    s = parse_task_statement("create or replace task t as select 1")
+    assert isinstance(s, CreateTask)
     assert s.replace
 
 

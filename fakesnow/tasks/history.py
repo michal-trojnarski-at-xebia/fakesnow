@@ -17,10 +17,12 @@ from fakesnow.tasks.statements import parse_task_name
 
 # provisional values, to be checked against live Snowflake
 DEFAULT_RESULT_LIMIT = 100
+COMPLETE_TASK_GRAPHS_RESULT_LIMIT = 1000  # documented
 GRAPH_VERSION = 1
 ERROR_STATES = ("FAILED", "CANCELLED")
 
 _TIME_RANGE_ARGS = {"SCHEDULED_TIME_RANGE_START", "SCHEDULED_TIME_RANGE_END"}
+_QUOTABLE_ARGS = {"DATABASE_NAME", "SCHEMA_NAME"}
 _START = "_fs_range_start"
 _END = "_fs_range_end"
 
@@ -82,7 +84,10 @@ def _literal(value: object) -> str:
 class _Args:
     """The named arguments of a table function call. Their values must be literals."""
 
-    def __init__(self, function: str, call: exp.Anonymous, allowed: set[str]) -> None:
+    def __init__(
+        self, function: str, call: exp.Anonymous, allowed: set[str], default_limit: int = DEFAULT_RESULT_LIMIT
+    ) -> None:
+        self.default_limit = default_limit
         self.values: dict[str, object] = {}
         # the time range bounds, which can be any scalar expression
         self.expressions: dict[str, Expr] = {}
@@ -125,14 +130,20 @@ class _Args:
 
     def limit(self) -> int:
         value = self.values.get("RESULT_LIMIT")
-        return DEFAULT_RESULT_LIMIT if value is None else int(str(value))
+        return self.default_limit if value is None else int(str(value))
 
 
 def _filters(args: _Args, columns: dict[str, str]) -> list[str]:
     """The conditions for the arguments shared by the history functions, given the source column of each."""
     filters = []
     for arg, column in columns.items():
-        if (value := args.get(arg)) is not None:
+        if (value := args.get(arg)) is None:
+            continue
+        if arg in _QUOTABLE_ARGS and len(value) > 1 and value.startswith('"') and value.endswith('"'):
+            # double quotes match case-sensitively
+            unquoted = value[1:-1].replace('""', '"')
+            filters.append(f"{column} = {_literal(unquoted)}")
+        else:
             filters.append(f"upper({column}) = upper({_literal(value)})")
     if args.flag("ERROR_ONLY"):
         filters.append("state in ({})".format(", ".join(_literal(s) for s in ERROR_STATES)))
@@ -190,8 +201,14 @@ def _task_history(call: exp.Anonymous, database: str, current_schema: str | None
 def _complete_task_graphs(
     call: exp.Anonymous, database: str, current_schema: str | None, databases: list[str]
 ) -> exp.Expr:
-    args = _Args("COMPLETE_TASK_GRAPHS", call, {"RESULT_LIMIT", "ROOT_TASK_NAME", "ERROR_ONLY"})
-    filters = _filters(args, {"ROOT_TASK_NAME": "root_task_name"})
+    args = _Args(
+        "COMPLETE_TASK_GRAPHS",
+        call,
+        {"RESULT_LIMIT", "ROOT_TASK_NAME", "ERROR_ONLY"},
+        default_limit=COMPLETE_TASK_GRAPHS_RESULT_LIMIT,
+    )
+    # a run whose root was skipped has no row
+    filters = [*_filters(args, {"ROOT_TASK_NAME": "root_task_name"}), "state != 'SKIPPED'"]
     columns = _GRAPH_COLUMNS.format(graph_version=GRAPH_VERSION)
     return _select(columns, graph_runs_table, databases, filters, args)
 

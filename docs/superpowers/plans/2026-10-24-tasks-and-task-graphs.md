@@ -574,3 +574,6 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
 27. DROP of a shared predecessor (`ROOT → A/B → C`, drop ROOT) is allowed as the docs say, leaving C with predecessors
     in two graphs; running one of them, fakesnow runs C only if every other resumed predecessor is in that run
     (a suspended one doesn't count). Compare with 24, where REMOVE AFTER is rejected instead.
+28. A suspended child is suspended whatever its predecessors' states, so a join (`D after ROOT, C`) ignores a suspended
+    C even when all of C's own predecessors are suspended. The docs don't say what a suspended child does when one of
+    its predecessors fails: fakesnow treats it as not run, so its dependents don't run either.

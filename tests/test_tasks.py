@@ -1397,6 +1397,19 @@ def test_execute_task_join_with_all_predecessors_suspended_is_skipped(
     assert _log(cur) == ["root"]
 
 
+def test_execute_task_join_ignores_suspended_predecessor_whose_predecessors_are_suspended(
+    cur: snowflake.connector.cursor.SnowflakeCursor, log: None
+):
+    _logging_task(cur, "root")
+    _logging_task(cur, "a", "after root")
+    _logging_task(cur, "b", "after root")
+    _logging_task(cur, "c", "after a, b")
+    _logging_task(cur, "d", "after root, c")
+    cur.execute("alter task d resume")
+    cur.execute("execute task root")
+    assert _log(cur) == ["root", "d"]
+
+
 def test_execute_task_join_with_one_predecessor_resumed_runs(
     cur: snowflake.connector.cursor.SnowflakeCursor, log: None
 ):

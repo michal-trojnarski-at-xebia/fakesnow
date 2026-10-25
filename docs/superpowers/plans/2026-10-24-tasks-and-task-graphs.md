@@ -582,3 +582,5 @@ Provisional values to verify with `snowflake-check` and correct in their owning 
     (the docs say the name is required then). The error code and message are provisional (fakesnow: 100357, "needs a
     task name when the task has several enabled predecessors"). A name that matches neither an enabled predecessor nor
     an ancestor fails the same way (fakesnow: "'<name>' is not an enabled predecessor of the task").
+30. `TASK_DEPENDENTS` returns the 12 documented columns, `created_on` to `condition` (fakesnow projects exactly those from
+    the SHOW TASKS row). Live Snowflake may return more, eg: the later SHOW TASKS additions.

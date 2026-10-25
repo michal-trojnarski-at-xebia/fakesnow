@@ -2576,12 +2576,23 @@ def test_task_dependents_requested_task_first(cur: snowflake.connector.cursor.Sn
     assert cur.fetchall() == [("Z_ROOT",), ("A_CHILD",)]
 
 
-def test_task_dependents_has_show_tasks_columns(cur: snowflake.connector.cursor.SnowflakeCursor):
+def test_task_dependents_columns(cur: snowflake.connector.cursor.SnowflakeCursor):
     _dependents_graph(cur)
-    cur.execute("show tasks")
-    expected = [d.name for d in cur.description]
     cur.execute("select * from table(information_schema.task_dependents(task_name => 'root'))")
-    assert [d.name for d in cur.description] == expected
+    assert [d.name for d in cur.description] == [
+        "created_on",
+        "name",
+        "database_name",
+        "schema_name",
+        "owner",
+        "comment",
+        "warehouse",
+        "schedule",
+        "predecessors",
+        "state",
+        "definition",
+        "condition",
+    ]
 
 
 def test_task_dependents_qualified_task_name(cur: snowflake.connector.cursor.SnowflakeCursor):

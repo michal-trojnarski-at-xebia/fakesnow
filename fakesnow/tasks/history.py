@@ -219,6 +219,26 @@ def _complete_task_graphs(
     return _select(columns, graph_runs_table, databases, filters, args)
 
 
+# the documented columns of TASK_DEPENDENTS, a subset of those of SHOW TASKS
+_DEPENDENTS_COLUMNS = ", ".join(
+    f"r.{c}"
+    for c in (
+        "created_on",
+        "name",
+        "database_name",
+        "schema_name",
+        "owner",
+        "comment",
+        "warehouse",
+        "schedule",
+        "predecessors",
+        "state",
+        "definition",
+        "condition",
+    )
+)
+
+
 def _task_dependents(call: exp.Anonymous, database: str, current_schema: str | None, databases: list[str]) -> exp.Expr:
     args = _Args("TASK_DEPENDENTS", call, {"TASK_NAME", "RECURSIVE"})
     task_name = args.get("TASK_NAME")
@@ -241,7 +261,7 @@ def _task_dependents(call: exp.Anonymous, database: str, current_schema: str | N
         select t.schema_name, t.name from {tasks} t
         join deps d on t.schema_name = d.schema_name and {child}{direct}
     )
-    select r.* from ({rows_sql(name.database or database)}) r
+    select {_DEPENDENTS_COLUMNS} from ({rows_sql(name.database or database)}) r
     where (r.schema_name, r.name) in (select schema_name, name from deps)
     order by r.name != {_literal(name.name)}, r.schema_name, r.name""",
         read="duckdb",

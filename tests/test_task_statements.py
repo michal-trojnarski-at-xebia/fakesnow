@@ -15,19 +15,31 @@ from fakesnow.tasks.statements import (
 )
 
 
-def test_parse_create_task_with_schedule_and_body():
-    s = parse_task_statement("create task t1 schedule = '5 minute' as insert into x values (1)")
+def test_parse_create_task():
+    s = parse_task_statement("create task t1 as select 1")
     assert s == CreateTask(
         name=TaskName(None, None, "T1"),
         replace=False,
         if_not_exists=False,
         or_alter=False,
-        properties={"SCHEDULE": "5 minute"},
+        properties={},
         after=[],
         condition=None,
-        definition="insert into x values (1)",
+        definition="select 1",
         clone_of=None,
     )
+
+
+def test_parse_create_task_schedule():
+    s = parse_task_statement("create task t1 schedule = '5 minute' as select 1")
+    assert isinstance(s, CreateTask)
+    assert s.properties == {"SCHEDULE": "5 minute"}
+
+
+def test_parse_create_task_dml_body():
+    s = parse_task_statement("create task t1 as insert into x values (1)")
+    assert isinstance(s, CreateTask)
+    assert s.definition == "insert into x values (1)"
 
 
 def test_parse_create_task_qualified_quoted_name():

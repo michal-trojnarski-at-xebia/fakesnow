@@ -1164,6 +1164,37 @@ def test_show_tasks_without_current_database_uses_account(_fakesnow: None):
         assert _show_names(cur, "show tasks") == ["T1"]
 
 
+def test_show_tasks_in_database_without_current_database_uses_account(_fakesnow: None):
+    with snowflake.connector.connect() as conn, conn.cursor() as cur:
+        cur.execute("create database db1")
+        cur.execute("create schema db1.schema1")
+        cur.execute("create task db1.schema1.t1 as select 1")
+    with snowflake.connector.connect() as conn, conn.cursor() as cur:
+        assert _show_names(cur, "show tasks in database") == ["T1"]
+
+
+def test_show_tasks_in_schema_without_current_database_uses_account(_fakesnow: None):
+    with snowflake.connector.connect() as conn, conn.cursor() as cur:
+        cur.execute("create database db1")
+        cur.execute("create schema db1.schema1")
+        cur.execute("create task db1.schema1.t1 as select 1")
+    with snowflake.connector.connect() as conn, conn.cursor() as cur:
+        assert _show_names(cur, "show tasks in schema") == ["T1"]
+
+
+def test_show_tasks_in_schema_without_current_schema_uses_current_database(_fakesnow: None):
+    with snowflake.connector.connect() as conn, conn.cursor() as cur:
+        cur.execute("create database db1")
+        # no PUBLIC schema, so a connection to the database has no current schema
+        cur.execute("drop schema if exists db1.public")
+        cur.execute("create schema db1.schema1")
+        cur.execute("create schema db1.schema2")
+        cur.execute("create task db1.schema1.t1 as select 1")
+        cur.execute("create task db1.schema2.t2 as select 1")
+    with snowflake.connector.connect(database="db1") as conn, conn.cursor() as cur:
+        assert _show_names(cur, "show tasks in schema") == ["T1", "T2"]
+
+
 def test_describe_task_row(dcur: snowflake.connector.cursor.DictCursor):
     dcur.execute("create task t1 schedule = '5 minute' comment = 'c' as select 1")
     dcur.execute("show tasks")

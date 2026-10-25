@@ -89,14 +89,17 @@ def show_tasks_sql(
     schema: str | None = None
     scope = stmt.scope or ("DATABASE" if current_database else "ACCOUNT")
     parts = stmt.scope_name or []
-    if scope == "SCHEMA":
-        schema = parts[-1] if parts else current_schema
+    if scope == "SCHEMA" and parts:
+        schema = parts[-1]
         database = parts[-2] if len(parts) > 1 else current_database
-        if not schema:
-            raise checks.no_current_schema_error("SHOW TASKS")
+    elif scope == "SCHEMA":
+        # without a name, the current schema, else every schema of the current database, else the account
+        database = current_database
+        schema = current_schema if database else None
     elif scope == "DATABASE":
+        # without a name, the current database, else the account
         database = parts[0] if parts else current_database
-    if scope != "ACCOUNT" and not database:
+    if parts and not database:
         raise checks.no_current_database_error("SHOW TASKS")
 
     with duck_conn.cursor() as conn:

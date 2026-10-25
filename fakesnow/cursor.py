@@ -26,7 +26,6 @@ import fakesnow.checks as checks
 import fakesnow.expr as expr
 import fakesnow.info_schema as info_schema
 import fakesnow.macros as macros
-import fakesnow.statement_type as statement_type
 import fakesnow.tasks as tasks
 import fakesnow.transforms as transforms
 from fakesnow import logger
@@ -213,7 +212,9 @@ class FakeSnowflakeCursor:
                 p = params or kwargs.get("binding_params")
                 print(f"{command};params={p}" if p else f"{command};", file=sys.stderr)
 
-            command = self._inline_variables(command)
+            # a task body keeps its session variables, which are resolved when it runs
+            if "$" not in command or not tasks.keeps_variables(command):
+                command = self._inline_variables(command)
             if kwargs.get("binding_params"):
                 # params have come via the server
                 params = kwargs["binding_params"]
@@ -490,12 +491,9 @@ class FakeSnowflakeCursor:
 
         result_sql = None
 
-        if (
-            transformed.args.get("task_statement")
-            and statement_type.statement_type_id(transformed) == statement_type.DDL
-        ):
-            # task DDL is written through a connection of its own, so the active transaction, explicit or implicit, is
-            # committed first, as Snowflake does before any DDL
+        if tasks.commits_transaction(transformed):
+            # the task statement is written through a connection of its own, so the active transaction, explicit or
+            # implicit, is committed first, as Snowflake does
             self._duck_conn.commit()
             self._conn._in_transaction = False
 
@@ -787,8 +785,6 @@ class FakeSnowflakeCursor:
             # rows affected, not the single row those counts are in
             affected_count = int(sum(c[0].as_py() for c in self._arrow_table.columns))
         self._rowcount = affected_count if affected_count is not None else self._arrow_table.num_rows
-        if transformed.args.get("set_return_value"):
-            tasks.store_return_value(self._conn.task_context)
         self._sfqid = str(uuid.uuid4())
 
         self._last_sql = result_sql or sql

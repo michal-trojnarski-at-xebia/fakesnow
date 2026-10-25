@@ -1,3 +1,4 @@
+import re
 import tempfile
 from datetime import datetime, timedelta
 
@@ -8,7 +9,7 @@ import snowflake.connector.cursor
 import fakesnow
 from fakesnow.conn import FakeSnowflakeConnection
 from fakesnow.instance import FakeSnow
-from tests.utils import dindent, indent
+from tests.utils import indent
 
 
 # stored session parameters have no live-visible equivalent (SHOW PARAMETERS IN TASK isn't implemented)
@@ -44,8 +45,9 @@ def test_create_task_if_not_exists_existing(cur: snowflake.connector.cursor.Snow
 
 def test_create_task_existing_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 as select 1")
-    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="already exists"):
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match=r"Object 'T1' already exists\.") as e:
         cur.execute("create task t1 as select 1")
+    assert (e.value.errno, e.value.sqlstate) == (2002, "42710")
 
 
 def test_create_or_replace_task_gets_new_id(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -63,6 +65,17 @@ def test_create_or_alter_task_keeps_id(cur: snowflake.connector.cursor.Snowflake
     assert _show(cur, "id") == [before]
 
 
+def test_create_or_alter_existing_task_status(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select 1")
+    cur.execute("create or alter task t1 as select 2")
+    assert cur.fetchall() == [("Statement executed successfully.",)]
+
+
+def test_create_or_alter_new_task_status(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create or alter task t1 as select 1")
+    assert cur.fetchall() == [("Task T1 successfully created.",)]
+
+
 def test_create_or_alter_task_replaces_definition(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 as select 1")
     cur.execute("create or alter task t1 as select 2")
@@ -72,7 +85,7 @@ def test_create_or_alter_task_replaces_definition(cur: snowflake.connector.curso
 def test_create_or_alter_task_resets_omitted_properties(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 comment = 'c' as select 1")
     cur.execute("create or alter task t1 as select 1")
-    assert _show(cur, "comment") == [(None,)]
+    assert _show(cur, "comment") == [("",)]
 
 
 def test_create_or_alter_task_keeps_last_suspended_reason(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -84,12 +97,12 @@ def test_create_or_alter_task_keeps_last_suspended_reason(cur: snowflake.connect
 
 
 def test_create_task_unknown_property_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
-    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="invalid property 'NOPE' for 'TASK'"):
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="invalid property 'nope' for 'TASK'"):
         cur.execute("create task t1 nope = 1 as select 1")
 
 
 def test_create_task_autocommit_false_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
-    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="invalid property 'AUTOCOMMIT' for 'TASK'"):
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="invalid property 'autocommit' for 'TASK'"):
         cur.execute("create task t1 autocommit = false as select 1")
 
 
@@ -143,7 +156,7 @@ def test_create_task_clone_gets_new_id(cur: snowflake.connector.cursor.Snowflake
 
 
 def test_create_task_clone_is_suspended(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("create task t1 as select 1")
+    cur.execute("create task t1 schedule = '60 minute' as select 1")
     cur.execute("alter task t1 resume")
     cur.execute("create task t2 clone t1")
     assert _show(cur, "state", "t2") == [("suspended",)]
@@ -151,7 +164,7 @@ def test_create_task_clone_is_suspended(cur: snowflake.connector.cursor.Snowflak
 
 @pytest.mark.parametrize("column", ["last_committed_on", "last_suspended_on", "last_suspended_reason"])
 def test_create_task_clone_clears_last_column(cur: snowflake.connector.cursor.SnowflakeCursor, column: str):
-    cur.execute("create task t1 as select 1")
+    cur.execute("create task t1 schedule = '60 minute' as select 1")
     cur.execute("alter task t1 resume")
     cur.execute("alter task t1 suspend")
     cur.execute("create task t2 clone t1")
@@ -233,30 +246,52 @@ def test_create_task_missing_schema_raises(cur: snowflake.connector.cursor.Snowf
 def test_create_task_missing_database_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
     with pytest.raises(
         snowflake.connector.errors.ProgrammingError,
-        match=r"Schema 'NOPE\.SCHEMA1' does not exist or not authorized\.",
+        match=r"Database 'NOPE' does not exist or not authorized\.",
     ):
         cur.execute("create task nope.schema1.t1 as select 1")
 
 
-def test_create_task_commits_open_transaction(_fakesnow: None):
+def test_create_task_leaves_open_transaction_uncommitted(_fakesnow: None):
     with snowflake.connector.connect(database="db1", schema="schema1", autocommit=False) as conn:
         cur = conn.cursor()
         cur.execute("create table t (i int)")
+        conn.commit()
         cur.execute("insert into t values (1)")
         cur.execute("create task t1 as select 1")
         conn.rollback()
         cur.execute("select i from t")
-        assert cur.fetchall() == [(1,)]
+        assert cur.fetchall() == []
 
 
-def test_create_task_commits_explicit_transaction(cur: snowflake.connector.cursor.SnowflakeCursor):
+def test_create_task_leaves_explicit_transaction_uncommitted(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create table t (i int)")
     cur.execute("begin")
     cur.execute("insert into t values (1)")
     cur.execute("create task t1 as select 1")
     cur.execute("rollback")
     cur.execute("select i from t")
-    assert cur.fetchall() == [(1,)]
+    assert cur.fetchall() == []
+
+
+def test_create_task_survives_rollback(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("begin")
+    cur.execute("create task t1 as select 1")
+    cur.execute("rollback")
+    assert _show(cur, "name") == [("T1",)]
+
+
+@pytest.mark.parametrize("statement", ["alter task t1 set comment = 'x'", "drop task t1"])
+def test_alter_and_drop_task_commit_open_transaction(_fakesnow: None, statement: str):
+    with snowflake.connector.connect(database="db1", schema="schema1", autocommit=False) as conn:
+        cur = conn.cursor()
+        cur.execute("create table t (i int)")
+        cur.execute("create task t1 as select 1")
+        conn.commit()
+        cur.execute("insert into t values (1)")
+        cur.execute(statement)
+        conn.rollback()
+        cur.execute("select i from t")
+        assert cur.fetchall() == [(1,)]
 
 
 def test_create_task_no_current_database_raises():
@@ -296,7 +331,15 @@ def test_create_or_replace_schema_drops_its_tasks(cur: snowflake.connector.curso
 
 
 def _start(cur: snowflake.connector.cursor.SnowflakeCursor, name: str) -> None:
+    """Resume a root or standalone task, giving it the schedule it needs to be resumed."""
+    cur.execute(f"alter task {name} set schedule = '60 minute'")
     cur.execute(f"alter task {name} resume")
+
+
+def _enable_dependents(cur: snowflake.connector.cursor.SnowflakeCursor, root: str) -> None:
+    """Resume a graph, giving its root the schedule it needs to be resumed."""
+    cur.execute(f"alter task {root} set schedule = '60 minute'")
+    cur.execute(f"select system$task_dependents_enable('{root}')")
 
 
 def _create_children(
@@ -314,21 +357,22 @@ def test_create_child_of_started_root_raises(cur: snowflake.connector.cursor.Sno
         match=r"Unable to update graph with root task DB1\.SCHEMA1\.ROOT since that root task is not suspended\.",
     ) as e:
         cur.execute("create task child after root as select 1")
-    assert (e.value.errno, e.value.sqlstate) == (91089, "02000")
+    assert (e.value.errno, e.value.sqlstate) == (91421, "22000")
 
 
 def test_create_child_with_missing_predecessor_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
     with pytest.raises(
-        snowflake.connector.errors.ProgrammingError, match=r"Task 'DB1\.SCHEMA1\.NOPE' does not exist or not authorized"
-    ):
+        snowflake.connector.errors.ProgrammingError, match=r"Invalid predecessor NOPE was specified\."
+    ) as e:
         cur.execute("create task child after nope as select 1")
+    assert (e.value.errno, e.value.sqlstate) == (91085, "42601")
 
 
 def test_create_child_with_schedule_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     with pytest.raises(
         snowflake.connector.errors.ProgrammingError,
-        match=r"Task DB1\.SCHEMA1\.CHILD with predecessors or a finalized root cannot have a schedule\.",
+        match=r"Task CHILD cannot have both a schedule and a predecessor\.",
     ):
         cur.execute("create task child schedule = '1 minute' after root as select 1")
 
@@ -339,7 +383,7 @@ def test_create_child_in_other_schema_raises(cur: snowflake.connector.cursor.Sno
     cur.execute("use schema schema1")  # create schema switches to the new schema
     with pytest.raises(
         snowflake.connector.errors.ProgrammingError,
-        match=r"Task DB1\.SCHEMA1\.CHILD cannot depend on task DB1\.S2\.ROOT in a different schema\.",
+        match=r"Cannot have predecessor ROOT from a different schema\.",
     ):
         cur.execute("create task child after s2.root as select 1")
 
@@ -349,7 +393,7 @@ def test_create_second_finalizer_raises(cur: snowflake.connector.cursor.Snowflak
     cur.execute("create task fin1 finalize = root as select 1")
     with pytest.raises(
         snowflake.connector.errors.ProgrammingError,
-        match=r"Invalid finalizer task DB1\.SCHEMA1\.FIN2: root task DB1\.SCHEMA1\.ROOT already has a finalizer\.",
+        match=r"Finalize target ROOT already have finalizer\.",
     ):
         cur.execute("create task fin2 finalize = root as select 1")
 
@@ -359,7 +403,7 @@ def test_create_finalizer_with_predecessor_raises(cur: snowflake.connector.curso
     cur.execute("create task other as select 1")
     with pytest.raises(
         snowflake.connector.errors.ProgrammingError,
-        match=r"Invalid finalizer task DB1\.SCHEMA1\.FIN: a finalizer cannot have predecessors\.",
+        match=r"Task DB1\.SCHEMA1\.FIN cannot have predecessors as a finalizer task\.",
     ):
         cur.execute("create task fin finalize = root after other as select 1")
 
@@ -375,14 +419,11 @@ def test_create_finalizer_with_children_raises(cur: snowflake.connector.cursor.S
         cur.execute("create or replace task fin finalize = root as select 1")
 
 
-def test_create_task_cycle_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+def test_create_task_cycle_is_accepted(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select 1")
-    with pytest.raises(
-        snowflake.connector.errors.ProgrammingError,
-        match=r"Task graph cycle detected involving task DB1\.SCHEMA1\.ROOT\.",
-    ):
-        cur.execute("create or replace task root after child as select 1")
+    cur.execute("create or replace task root after child as select 1")
+    assert cur.fetchall() == [("Task ROOT successfully created.",)]
 
 
 def test_create_task_too_many_predecessors_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -451,7 +492,7 @@ def test_drop_root_clears_finalizer_relation(cur: snowflake.connector.cursor.Sno
     cur.execute("create task root as select 1")
     cur.execute("create task fin finalize = root as select 1")
     cur.execute("drop task root")
-    assert indent(_show(cur, "task_relations", "fin")) == [('{\n  "Predecessors": []\n}',)]
+    assert _show(cur, "task_relations", "fin") == [('{"Predecessors":[]}',)]
 
 
 def test_drop_task_in_started_graph_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -483,19 +524,34 @@ def test_create_or_replace_started_standalone_task_is_suspended(cur: snowflake.c
     assert _show(cur, "state") == [("suspended",)]
 
 
-def test_create_or_alter_started_standalone_task_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+def test_create_or_alter_started_standalone_task_succeeds(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 schedule = '1 minute' as select 1")
     _start(cur, "t1")
-    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="root task is not suspended"):
-        cur.execute("create or alter task t1 schedule = '1 minute' as select 2")
+    cur.execute("create or alter task t1 schedule = '1 minute' as select 2")
+    assert _show(cur, "definition") == [("select 2",)]
 
 
-def test_create_or_replace_started_root_with_dependents_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+def test_create_or_alter_started_standalone_task_stays_started(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 schedule = '1 minute' as select 1")
+    _start(cur, "t1")
+    cur.execute("create or alter task t1 schedule = '1 minute' as select 2")
+    assert _show(cur, "state") == [("started",)]
+
+
+def test_create_or_replace_started_root_with_dependents_succeeds(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root schedule = '1 minute' as select 1")
     cur.execute("create task child after root as select 1")
     _start(cur, "root")
-    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="root task is not suspended"):
-        cur.execute("create or replace task root schedule = '1 minute' as select 2")
+    cur.execute("create or replace task root schedule = '1 minute' as select 2")
+    assert cur.fetchall() == [("Task ROOT successfully created.",)]
+
+
+def test_create_or_replace_started_root_with_dependents_is_suspended(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root schedule = '1 minute' as select 1")
+    cur.execute("create task child after root as select 1")
+    _start(cur, "root")
+    cur.execute("create or replace task root schedule = '1 minute' as select 2")
+    assert _show(cur, "state", "root") == [("suspended",)]
 
 
 def test_drop_started_root_with_dependents_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -524,14 +580,13 @@ def test_create_child_after_task_in_started_second_graph_raises(cur: snowflake.c
         cur.execute("create task child after root1, root2 as select 1")
 
 
-def test_create_child_with_predecessors_in_different_graphs_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+def test_create_child_with_predecessors_in_different_graphs_is_accepted(
+    cur: snowflake.connector.cursor.SnowflakeCursor,
+):
     cur.execute("create task root1 as select 1")
     cur.execute("create task root2 as select 1")
-    with pytest.raises(
-        snowflake.connector.errors.ProgrammingError,
-        match=r"Task DB1\.SCHEMA1\.CHILD cannot have predecessors in different task graphs\.",
-    ):
-        cur.execute("create task child after root1, root2 as select 1")
+    cur.execute("create task child after root1, root2 as select 1")
+    assert cur.fetchall() == [("Task CHILD successfully created.",)]
 
 
 def test_create_child_with_predecessors_in_one_graph(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -550,7 +605,7 @@ def test_create_child_after_other_schema_task_ignores_same_named_started_local_t
     cur.execute("create schema s2")
     cur.execute("create task s2.x as select 1")
     cur.execute("use schema schema1")
-    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="in a different schema"):
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="from a different schema"):
         cur.execute("create task child after s2.x as select 1")
 
 
@@ -559,7 +614,7 @@ def test_create_finalizer_of_non_root_raises(cur: snowflake.connector.cursor.Sno
     cur.execute("create task child after root as select 1")
     with pytest.raises(
         snowflake.connector.errors.ProgrammingError,
-        match=r"Invalid finalizer task DB1\.SCHEMA1\.FIN: DB1\.SCHEMA1\.CHILD is not a root task\.",
+        match=r"Task DB1\.SCHEMA1\.FIN cannot finalize a non-root task DB1\.SCHEMA1\.CHILD\.",
     ):
         cur.execute("create task fin finalize = child as select 1")
 
@@ -577,7 +632,7 @@ def test_create_finalizer_of_root_in_other_schema_raises(cur: snowflake.connecto
     cur.execute("create task root as select 1")
     with pytest.raises(
         snowflake.connector.errors.ProgrammingError,
-        match=r"Task DB1\.SCHEMA1\.FIN cannot depend on task DB1\.S2\.ROOT in a different schema\.",
+        match=r"Cannot finalize graph S2\.ROOT in a different schema\.",
     ):
         cur.execute("create task fin finalize = s2.root as select 1")
 
@@ -586,7 +641,7 @@ def test_create_task_finalizing_itself_raises(cur: snowflake.connector.cursor.Sn
     cur.execute("create task t1 as select 1")
     with pytest.raises(
         snowflake.connector.errors.ProgrammingError,
-        match=r"Invalid finalizer task DB1\.SCHEMA1\.T1: a task cannot finalize itself\.",
+        match=r"Invalid finalized root task T1 was specified\.",
     ):
         cur.execute("create or replace task t1 finalize = t1 as select 1")
 
@@ -613,25 +668,25 @@ def test_create_or_alter_task_over_started_standalone_with_new_predecessor_raise
 
 
 def test_alter_task_resume_status(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("create task t1 as select 1")
+    cur.execute("create task t1 schedule = '60 minute' as select 1")
     cur.execute("alter task t1 resume")
     assert cur.fetchall() == [("Statement executed successfully.",)]
 
 
 def test_alter_task_resume_sets_state(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("create task t1 as select 1")
+    cur.execute("create task t1 schedule = '60 minute' as select 1")
     cur.execute("alter task t1 resume")
     assert _show(cur, "state") == [("started",)]
 
 
 def test_alter_task_first_resume_sets_last_committed_on(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("create task t1 as select 1")
+    cur.execute("create task t1 schedule = '60 minute' as select 1")
     cur.execute("alter task t1 resume")
     assert _show(cur, "last_committed_on") != [(None,)]
 
 
 def test_alter_task_second_resume_keeps_last_committed_on(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("create task t1 as select 1")
+    cur.execute("create task t1 schedule = '60 minute' as select 1")
     cur.execute("alter task t1 resume")
     (before,) = _show(cur, "last_committed_on")
     cur.execute("alter task t1 suspend")
@@ -640,21 +695,71 @@ def test_alter_task_second_resume_keeps_last_committed_on(cur: snowflake.connect
 
 
 def test_alter_task_suspend_sets_state(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("create task t1 as select 1")
+    cur.execute("create task t1 schedule = '60 minute' as select 1")
     cur.execute("alter task t1 resume")
     cur.execute("alter task t1 suspend")
     assert _show(cur, "state") == [("suspended",)]
 
 
 def test_alter_task_suspend_sets_reason(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("create task t1 as select 1")
+    cur.execute("create task t1 schedule = '60 minute' as select 1")
     cur.execute("alter task t1 resume")
     cur.execute("alter task t1 suspend")
     assert _show(cur, "last_suspended_reason") == [("USER_SUSPENDED",)]
 
 
-def test_alter_task_suspend_sets_last_suspended_on(cur: snowflake.connector.cursor.SnowflakeCursor):
+def test_alter_task_resume_without_trigger_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 as select 1")
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"Task DB1\.SCHEMA1\.T1 should have a SCHEDULE, AFTER, FINALIZE or WHEN to be resumed\.",
+    ) as e:
+        cur.execute("alter task t1 resume")
+    assert (e.value.errno, e.value.sqlstate) == (91453, "22000")
+
+
+def test_alter_serverless_task_triggered_by_when_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 when 1 = 1 as select 1")
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"TARGET_COMPLETION_INTERVAL must be set for serverless triggered task DB1\.SCHEMA1\.T1 to resume or "
+        r"execute\.",
+    ) as e:
+        cur.execute("alter task t1 resume")
+    assert (e.value.errno, e.value.sqlstate) == (91865, "55000")
+
+
+def test_execute_serverless_task_triggered_by_when_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 when 1 = 1 as select 1")
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="TARGET_COMPLETION_INTERVAL must be set"):
+        cur.execute("execute task t1")
+
+
+def test_execute_serverless_task_triggered_by_when_with_target_completion_interval(
+    cur: snowflake.connector.cursor.SnowflakeCursor,
+):
+    cur.execute("create task t1 target_completion_interval = '10 minutes' when 1 = 1 as select 1")
+    cur.execute("execute task t1")
+    assert _history(cur, "state") == [("SUCCEEDED",)]
+
+
+def test_alter_task_resume_with_when(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 warehouse = wh when 1 = 1 as select 1")
+    cur.execute("alter task t1 resume")
+    assert _show(cur, "state") == [("started",)]
+
+
+@pytest.mark.parametrize("column", ["last_suspended_reason", "last_suspended_on"])
+def test_alter_task_suspend_suspended_task_changes_nothing(
+    cur: snowflake.connector.cursor.SnowflakeCursor, column: str
+):
+    cur.execute("create task t1 as select 1")
+    cur.execute("alter task t1 suspend")
+    assert _show(cur, column) == [(None,)]
+
+
+def test_alter_task_suspend_sets_last_suspended_on(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 schedule = '60 minute' as select 1")
     cur.execute("alter task t1 resume")
     cur.execute("alter task t1 suspend")
     assert _show(cur, "last_suspended_on") != [(None,)]
@@ -674,7 +779,7 @@ def test_alter_task_set_keeps_other_properties(cur: snowflake.connector.cursor.S
 
 def test_alter_task_set_unknown_property_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 as select 1")
-    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="invalid property 'NOPE' for 'TASK'"):
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="invalid property 'nope' for 'TASK'"):
         cur.execute("alter task t1 set nope = 1")
 
 
@@ -686,14 +791,14 @@ def test_alter_task_set_session_parameter(cur: snowflake.connector.cursor.Snowfl
 
 def test_alter_task_unset_unknown_property_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 as select 1")
-    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="invalid property 'NOPE' for 'TASK'"):
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="invalid property 'nope' for 'TASK'"):
         cur.execute("alter task t1 unset nope")
 
 
 def test_alter_task_unset_comment(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 comment = 'c' as select 1")
     cur.execute("alter task t1 unset comment")
-    assert _show(cur, "comment") == [(None,)]
+    assert _show(cur, "comment") == [("",)]
 
 
 def test_alter_task_unset_session_parameter(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -759,31 +864,34 @@ def test_alter_task_add_after_other_schema_raises(cur: snowflake.connector.curso
     cur.execute("use schema schema1")
     with pytest.raises(
         snowflake.connector.errors.ProgrammingError,
-        match=r"Task DB1\.SCHEMA1\.CHILD cannot depend on task DB1\.S2\.P in a different schema\.",
+        match=r"Cannot have predecessor P from a different schema\.",
     ):
         cur.execute("alter task child add after s2.p")
 
 
-def test_alter_task_add_after_cycle_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+def test_alter_task_add_after_cycle_is_accepted(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select 1")
-    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="Task graph cycle detected"):
-        cur.execute("alter task root add after child")
+    cur.execute("alter task root add after child")
+    assert cur.fetchall() == [("Statement executed successfully.",)]
 
 
 def test_alter_task_add_after_to_scheduled_task_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     cur.execute("create task t1 schedule = '1 minute' as select 1")
-    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="cannot have a schedule"):
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError, match="Task T1 cannot have both a schedule and a predecessor"
+    ) as e:
         cur.execute("alter task t1 add after root")
+    assert (e.value.errno, e.value.sqlstate) == (91400, "42601")
 
 
-def test_alter_task_add_after_different_graph_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+def test_alter_task_add_after_different_graph_is_accepted(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root1 as select 1")
     cur.execute("create task root2 as select 1")
     cur.execute("create task child after root1 as select 1")
-    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="predecessors in different task graphs"):
-        cur.execute("alter task child add after root2")
+    cur.execute("alter task child add after root2")
+    assert cur.fetchall() == [("Statement executed successfully.",)]
 
 
 def test_alter_task_remove_after(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -821,16 +929,15 @@ def test_alter_task_set_finalize(cur: snowflake.connector.cursor.SnowflakeCursor
     cur.execute("create task root as select 1")
     cur.execute("create task fin as select 1")
     cur.execute("alter task fin set finalize = root")
-    assert indent(_show(cur, "task_relations", "fin")) == [
-        ('{\n  "Predecessors": [],\n  "FinalizedRootTask": "DB1.SCHEMA1.ROOT"\n}',)
-    ]
+    # compact, as Snowflake renders it
+    assert _show(cur, "task_relations", "fin") == [('{"FinalizedRootTask":"DB1.SCHEMA1.ROOT","Predecessors":[]}',)]
 
 
 def test_alter_task_set_finalize_of_non_root_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select 1")
     cur.execute("create task fin as select 1")
-    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="is not a root task"):
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="cannot finalize a non-root task"):
         cur.execute("alter task fin set finalize = child")
 
 
@@ -840,27 +947,57 @@ def test_alter_root_with_finalizer_add_after_raises(cur: snowflake.connector.cur
     cur.execute("create task parent as select 1")
     with pytest.raises(
         snowflake.connector.errors.ProgrammingError,
-        match=r"Invalid finalizer task DB1\.SCHEMA1\.FIN: DB1\.SCHEMA1\.ROOT is not a root task\.",
-    ):
+        match=r"This task has a finalizer and cannot be made a child task\. Please remove the finalizer before "
+        r"adding a predecessor\.",
+    ) as e:
         cur.execute("alter task root add after parent")
+    assert (e.value.errno, e.value.sqlstate) == (91856, "55000")
 
 
-def test_alter_task_remove_after_splitting_join_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+def test_alter_root_with_finalizer_set_finalize_is_accepted(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task other as select 1")
+    cur.execute("create task root as select 1")
+    cur.execute("create task fin finalize = root as select 1")
+    cur.execute("alter task root set finalize = other")
+    assert cur.fetchall() == [("Statement executed successfully.",)]
+
+
+def test_alter_root_with_finalizer_set_finalize_relations(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task other as select 1")
+    cur.execute("create task root as select 1")
+    cur.execute("create task fin finalize = root as select 1")
+    cur.execute("alter task root set finalize = other")
+    assert _show(cur, "task_relations", "root") == [
+        ('{"FinalizedRootTask":"DB1.SCHEMA1.OTHER","Predecessors":[],"FinalizerTask":"DB1.SCHEMA1.FIN"}',)
+    ]
+
+
+def test_alter_task_remove_after_splitting_join_is_accepted(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     cur.execute("create task a after root as select 1")
     cur.execute("create task b after root as select 1")
     cur.execute("create task c after a, b as select 1")
+    cur.execute("alter task a remove after root")
+    assert cur.fetchall() == [("Statement executed successfully.",)]
+
+
+def test_alter_task_remove_after_non_predecessor_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    cur.execute("create task other as select 1")
+    cur.execute("create task child after root as select 1")
     with pytest.raises(
-        snowflake.connector.errors.ProgrammingError,
-        match=r"Task DB1\.SCHEMA1\.C cannot have predecessors in different task graphs\.",
-    ):
-        cur.execute("alter task a remove after root")
+        snowflake.connector.errors.ProgrammingError, match="Task CHILD does not have predecessor OTHER"
+    ) as e:
+        cur.execute("alter task child remove after other")
+    assert (e.value.errno, e.value.sqlstate) == (91417, "22000")
 
 
 def test_alter_task_set_schedule_on_child_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select 1")
-    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="cannot have a schedule"):
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError, match="Task CHILD cannot have both a schedule and a predecessor"
+    ):
         cur.execute("alter task child set schedule = '1 minute'")
 
 
@@ -875,7 +1012,7 @@ def test_alter_task_unset_finalize_clears_finalizer_relation(cur: snowflake.conn
     cur.execute("create task root as select 1")
     cur.execute("create task fin finalize = root as select 1")
     cur.execute("alter task fin unset finalize")
-    assert indent(_show(cur, "task_relations", "fin")) == [('{\n  "Predecessors": []\n}',)]
+    assert _show(cur, "task_relations", "fin") == [('{"Predecessors":[]}',)]
 
 
 def test_alter_task_modify_as(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -888,6 +1025,48 @@ def test_alter_task_modify_when(cur: snowflake.connector.cursor.SnowflakeCursor)
     cur.execute("create task t1 as select 1")
     cur.execute("alter task t1 modify when 1 = 1")
     assert _show(cur, "condition") == [("1 = 1",)]
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "cast('1' as int) = 1",
+        "'1'::int = 1",
+        "not (1 = 2)",
+        "1 between 0 and 2",
+        "true",
+        "'a' = 'a' and true",
+    ],
+)
+def test_create_task_when_allowed(cur: snowflake.connector.cursor.SnowflakeCursor, condition: str):
+    cur.execute(f"create task t1 when {condition} as select 1")
+    assert cur.fetchall() == [("Task T1 successfully created.",)]
+
+
+def test_create_task_when_predecessor_return_value_allowed(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    cur.execute("create task t1 after root when system$get_predecessor_return_value() = 'x' as select 1")
+    assert cur.fetchall() == [("Task T1 successfully created.",)]
+
+
+@pytest.mark.parametrize(
+    "condition", ["1 + 1 = 2", "1 in (1, 2)", "null is null", "'a' like 'a%'", "current_date() > '2000-01-01'"]
+)
+def test_create_task_when_not_allowed_raises(cur: snowflake.connector.cursor.SnowflakeCursor, condition: str):
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"Invalid expression for task condition expression\. Only some data type conversions and the following "
+        r"functions are allowed: \[SYSTEM\$GET_PREDECESSOR_RETURN_VALUE, SYSTEM\$PREDECESSORS_STATE, "
+        r"SYSTEM\$STREAM_HAS_DATA, SYSTEM\$TASK_COMPLETION_STATE\]\. Please see the documentation for more details\.",
+    ) as e:
+        cur.execute(f"create task t1 when {condition} as select 1")
+    assert (e.value.errno, e.value.sqlstate) == (91464, "42601")
+
+
+def test_alter_task_modify_when_not_allowed_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select 1")
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="Invalid expression for task condition"):
+        cur.execute("alter task t1 modify when current_date() > '2000-01-01'")
 
 
 def test_alter_task_remove_when(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -917,19 +1096,19 @@ def test_alter_missing_task_if_exists(cur: snowflake.connector.cursor.SnowflakeC
 
 
 def test_task_dependents_enable_column_name(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("create task root as select 1")
+    cur.execute("create task root schedule = '60 minute' as select 1")
     cur.execute("select system$task_dependents_enable('root')")
-    assert [d.name for d in cur.description] == ["SYSTEM$TASK_DEPENDENTS_ENABLE('root')"]
+    assert [d.name for d in cur.description] == ["SYSTEM$TASK_DEPENDENTS_ENABLE('ROOT')"]
 
 
-def test_task_dependents_enable_returns_null(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("create task root as select 1")
+def test_task_dependents_enable_returns_ok(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root schedule = '60 minute' as select 1")
     cur.execute("select system$task_dependents_enable('root')")
-    assert cur.fetchall() == [(None,)]
+    assert cur.fetchall() == [("OK",)]
 
 
 def test_task_dependents_enable_resumes_graph(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("create task root as select 1")
+    cur.execute("create task root schedule = '60 minute' as select 1")
     cur.execute("create task child after root as select 1")
     cur.execute("create task grandchild after child as select 1")
     cur.execute("select system$task_dependents_enable('root')")
@@ -937,22 +1116,45 @@ def test_task_dependents_enable_resumes_graph(cur: snowflake.connector.cursor.Sn
 
 
 def test_task_dependents_enable_resumes_finalizer(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("create task root as select 1")
+    cur.execute("create task root schedule = '60 minute' as select 1")
     cur.execute("create task fin finalize = root as select 1")
     cur.execute("select system$task_dependents_enable('root')")
     assert _show(cur, "state", "fin") == [("started",)]
 
 
 def test_task_dependents_enable_leaves_other_graphs_suspended(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("create task root as select 1")
+    cur.execute("create task root schedule = '60 minute' as select 1")
     cur.execute("create task other as select 1")
     cur.execute("select system$task_dependents_enable('root')")
     assert _show(cur, "state", "other") == [("suspended",)]
 
 
+def test_task_dependents_enable_root_without_trigger_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"Task DB1\.SCHEMA1\.ROOT should have a SCHEDULE, AFTER, FINALIZE or WHEN to be resumed\.",
+    ):
+        cur.execute("select system$task_dependents_enable('root')")
+
+
+def test_task_dependents_enable_root_without_trigger_resumes_dependents(
+    cur: snowflake.connector.cursor.SnowflakeCursor,
+):
+    cur.execute("create task root as select 1")
+    cur.execute("create task child after root as select 1")
+    with pytest.raises(snowflake.connector.errors.ProgrammingError):
+        cur.execute("select system$task_dependents_enable('root')")
+    assert _show(cur, "name, state") == [("CHILD", "started"), ("ROOT", "suspended")]
+
+
 def test_task_dependents_enable_missing_task_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
-    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="does not exist or not authorized"):
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"invalid value \[nope\] for parameter 'RECURSIVE_TASK_ENABLE'",
+    ) as e:
         cur.execute("select system$task_dependents_enable('nope')")
+    assert (e.value.errno, e.value.sqlstate) == (1008, "22023")
 
 
 def test_task_dependents_enable_in_larger_select_not_implemented(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -970,23 +1172,24 @@ SHOW_TASKS_COLUMNS = [
     "comment",
     "warehouse",
     "schedule",
-    "scheduling_mode",
-    "target_completion_interval",
     "predecessors",
     "state",
     "definition",
     "condition",
     "allow_overlapping_execution",
     "error_integration",
-    "success_integration",
     "last_committed_on",
     "last_suspended_on",
     "owner_role_type",
     "config",
-    "last_suspended_reason",
     "task_relations",
+    "last_suspended_reason",
+    "success_integration",
+    "scheduling_mode",
+    "target_completion_interval",
     "execute_as_user",
     "overlap_policy",
+    "created_by_user",
 ]
 
 
@@ -1006,33 +1209,35 @@ _NEW_TASK_ROW = {
     "database_name": "DB1",
     "schema_name": "SCHEMA1",
     "owner": "PUBLIC",
-    "comment": None,
+    "comment": "",
     "warehouse": None,
     "schedule": "5 minute",
-    "scheduling_mode": None,
-    "target_completion_interval": None,
     "predecessors": "[]",
     "state": "suspended",
     "definition": "select 1",
     "condition": None,
     "allow_overlapping_execution": "false",
-    "error_integration": None,
-    "success_integration": None,
+    "error_integration": "null",
     "last_committed_on": None,
     "last_suspended_on": None,
     "owner_role_type": "ROLE",
     "config": None,
+    # compact, as Snowflake renders it
+    "task_relations": '{"Predecessors":[]}',
     "last_suspended_reason": None,
-    "task_relations": '{\n  "Predecessors": []\n}',
+    "success_integration": "null",
+    "scheduling_mode": None,
+    "target_completion_interval": None,
     "execute_as_user": None,
-    "overlap_policy": None,
+    "overlap_policy": "NO_OVERLAP",
+    "created_by_user": None,
 }
 
 
 def _new_task_row(dcur: snowflake.connector.cursor.DictCursor, show: str) -> dict:
     dcur.execute("create task t1 schedule = '5 minute' as select 1")
     dcur.execute(show)
-    (row,) = dindent(dcur.fetchall())
+    (row,) = dcur.fetchall()
     return row
 
 
@@ -1054,35 +1259,46 @@ def test_show_tasks_predecessors_are_qualified(cur: snowflake.connector.cursor.S
     assert indent(_show(cur, "predecessors", "join")) == [('[\n  "DB1.SCHEMA1.A",\n  "DB1.SCHEMA1.B"\n]',)]
 
 
-@pytest.mark.parametrize("column", ["allow_overlapping_execution", "config", "overlap_policy"])
+@pytest.mark.parametrize("column", ["config", "overlap_policy"])
 def test_show_tasks_child_has_null_root_only_column(cur: snowflake.connector.cursor.SnowflakeCursor, column: str):
     cur.execute("create task root config = '{\"k\": 1}' as select 1")
     cur.execute("create task child after root as select 1")
     assert _show(cur, column, "child") == [(None,)]
 
 
+def test_show_tasks_child_allow_overlapping_execution_is_null_text(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root allow_overlapping_execution = true as select 1")
+    cur.execute("create task child after root as select 1")
+    assert _show(cur, "allow_overlapping_execution", "child") == [("null",)]
+
+
+def test_show_tasks_overlap_policy_follows_allow_overlapping_execution(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root allow_overlapping_execution = true as select 1")
+    assert _show(cur, "overlap_policy", "root") == [("ALLOW_CHILD_OVERLAP",)]
+
+
+def test_show_tasks_created_by_user(_fakesnow: None):
+    with snowflake.connector.connect(database="db1", schema="schema1", user="someone") as conn, conn.cursor() as cur:
+        cur.execute("create task t1 as select 1")
+        assert _show(cur, "created_by_user") == [("SOMEONE",)]
+
+
 def test_show_tasks_task_relations_for_root_with_finalizer(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     cur.execute("create task fin finalize = root as select 1")
-    assert indent(_show(cur, "task_relations", "root")) == [
-        ('{\n  "Predecessors": [],\n  "FinalizerTask": "DB1.SCHEMA1.FIN"\n}',)
-    ]
+    assert _show(cur, "task_relations", "root") == [('{"Predecessors":[],"FinalizerTask":"DB1.SCHEMA1.FIN"}',)]
 
 
 def test_show_tasks_task_relations_for_finalizer(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     cur.execute("create task fin finalize = root as select 1")
-    assert indent(_show(cur, "task_relations", "fin")) == [
-        ('{\n  "Predecessors": [],\n  "FinalizedRootTask": "DB1.SCHEMA1.ROOT"\n}',)
-    ]
+    assert _show(cur, "task_relations", "fin") == [('{"FinalizedRootTask":"DB1.SCHEMA1.ROOT","Predecessors":[]}',)]
 
 
 def test_show_tasks_task_relations_for_child(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select 1")
-    assert indent(_show(cur, "task_relations", "child")) == [
-        ('{\n  "Predecessors": [\n    "DB1.SCHEMA1.ROOT"\n  ]\n}',)
-    ]
+    assert _show(cur, "task_relations", "child") == [('{"Predecessors":["DB1.SCHEMA1.ROOT"]}',)]
 
 
 def test_show_tasks_target_completion_interval(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -1157,10 +1373,40 @@ def test_show_tasks_limit(cur: snowflake.connector.cursor.SnowflakeCursor):
 def test_show_tasks_limit_from(cur: snowflake.connector.cursor.SnowflakeCursor):
     for name in ("a", "b", "c"):
         cur.execute(f"create task {name} as select 1")
-    assert _show_names(cur, "show tasks limit 1 from 'B'") == ["C"]
+    assert _show_names(cur, "show tasks limit 1 from 'B'") == ["B"]
 
 
-def test_show_tasks_defaults_to_current_database(cur: snowflake.connector.cursor.SnowflakeCursor):
+def test_show_tasks_root_only_excludes_finalizer(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    cur.execute("create task fin finalize = root as select 1")
+    assert _show_names(cur, "show tasks root only") == ["ROOT"]
+
+
+def test_show_tasks_defaults_to_current_schema(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create schema schema2")
+    cur.execute("create task schema2.other as select 1")
+    cur.execute("use schema schema1")
+    cur.execute("create task t1 as select 1")
+    assert _show_names(cur, "show tasks") == ["T1"]
+
+
+def test_show_tasks_without_current_schema_uses_current_database(_fakesnow: None):
+    with snowflake.connector.connect(database="db1", schema="schema1") as conn, conn.cursor() as cur:
+        cur.execute("create task t1 as select 1")
+        cur.execute("create schema schema2")
+        cur.execute("create task schema2.t2 as select 1")
+    with snowflake.connector.connect(database="db1") as conn, conn.cursor() as cur:
+        assert _show_names(cur, "show tasks") == ["T1", "T2"]
+
+
+def test_show_tasks_in_missing_schema_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError, match=r"Schema 'DB1\.NOPE' does not exist or not authorized\."
+    ):
+        cur.execute("show tasks in schema nope")
+
+
+def test_show_tasks_skips_other_database(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create database db2")
     cur.execute("create schema db2.schema1")
     cur.execute("use schema db1.schema1")
@@ -1385,7 +1631,7 @@ def test_execute_task_runs_graph_in_order(cur: snowflake.connector.cursor.Snowfl
     _logging_task(cur, "root")
     _logging_task(cur, "child", "after root")
     _logging_task(cur, "grandchild", "after child")
-    cur.execute("select system$task_dependents_enable('root')")
+    _enable_dependents(cur, "root")
     cur.execute("execute task root")
     assert _log(cur) == ["root", "child", "grandchild"]
 
@@ -1399,7 +1645,7 @@ def test_execute_task_failed_body_does_not_raise(cur: snowflake.connector.cursor
 def test_execute_task_failed_task_skips_dependents(cur: snowflake.connector.cursor.SnowflakeCursor, log: None):
     cur.execute("create task root as select * from missing")
     _logging_task(cur, "child", "after root")
-    cur.execute("select system$task_dependents_enable('root')")
+    _enable_dependents(cur, "root")
     cur.execute("execute task root")
     assert _log(cur) == []
 
@@ -1408,7 +1654,7 @@ def test_execute_task_finalizer_runs_after_failure(cur: snowflake.connector.curs
     cur.execute("create task root as select * from missing")
     _logging_task(cur, "child", "after root")
     _logging_task(cur, "fin", "finalize = root")
-    cur.execute("select system$task_dependents_enable('root')")
+    _enable_dependents(cur, "root")
     cur.execute("execute task root")
     assert _log(cur) == ["fin"]
 
@@ -1417,7 +1663,7 @@ def test_execute_task_when_false_skips_task_and_dependents(cur: snowflake.connec
     _logging_task(cur, "root")
     _logging_task(cur, "child", "after root when 1 = 2")
     _logging_task(cur, "grandchild", "after child")
-    cur.execute("select system$task_dependents_enable('root')")
+    _enable_dependents(cur, "root")
     cur.execute("execute task root")
     assert _log(cur) == ["root"]
 
@@ -1425,7 +1671,7 @@ def test_execute_task_when_false_skips_task_and_dependents(cur: snowflake.connec
 def test_execute_task_root_when_false_skips_finalizer(cur: snowflake.connector.cursor.SnowflakeCursor, log: None):
     _logging_task(cur, "root", "when 1 = 2")
     _logging_task(cur, "fin", "finalize = root")
-    cur.execute("select system$task_dependents_enable('root')")
+    _enable_dependents(cur, "root")
     cur.execute("execute task root")
     assert _log(cur) == []
 
@@ -1437,13 +1683,25 @@ def test_execute_task_suspended_child_is_skipped(cur: snowflake.connector.cursor
     assert _log(cur) == ["root"]
 
 
-def test_execute_task_suspended_child_counts_as_succeeded(cur: snowflake.connector.cursor.SnowflakeCursor, log: None):
+def test_execute_task_runs_children_before_grandchildren(cur: snowflake.connector.cursor.SnowflakeCursor, log: None):
+    _logging_task(cur, "root")
+    _logging_task(cur, "m", "after root")
+    _logging_task(cur, "z", "after root")
+    _logging_task(cur, "a", "after m")
+    _enable_dependents(cur, "root")
+    cur.execute("execute task root")
+    assert _log(cur) == ["root", "m", "z", "a"]
+
+
+def test_execute_task_dependent_of_suspended_child_does_not_run(
+    cur: snowflake.connector.cursor.SnowflakeCursor, log: None
+):
     _logging_task(cur, "root")
     _logging_task(cur, "child", "after root")
     _logging_task(cur, "grandchild", "after child")
     cur.execute("alter task grandchild resume")
     cur.execute("execute task root")
-    assert _log(cur) == ["root", "grandchild"]
+    assert _log(cur) == ["root"]
 
 
 def test_execute_task_join_with_all_predecessors_suspended_is_skipped(
@@ -1487,7 +1745,7 @@ def test_execute_task_join_ignores_suspended_predecessor_after_failure(
 def test_execute_task_skipped_root_skips_dependent_of_suspended_child(
     cur: snowflake.connector.cursor.SnowflakeCursor, log: None
 ):
-    _logging_task(cur, "root", "when 1 = 2")
+    _logging_task(cur, "root", "warehouse = wh when 1 = 2")
     _logging_task(cur, "a", "after root")
     _logging_task(cur, "b", "after a")
     cur.execute("alter task b resume")
@@ -1508,32 +1766,46 @@ def test_execute_task_join_with_one_predecessor_resumed_runs(
     assert _log(cur) == ["root", "a", "c"]
 
 
-def _split_join_by_drop(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
-    """A and B become roots when their predecessor is dropped, and C keeps both as predecessors."""
-    _logging_task(cur, "root")
-    _logging_task(cur, "a", "after root")
-    _logging_task(cur, "b", "after root")
-    _logging_task(cur, "c", "after a, b")
+def test_execute_task_after_drop_split_join_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    # A and B become roots when their predecessor is dropped, and C keeps both as predecessors
+    cur.execute("create task root as select 1")
+    cur.execute("create task a after root as select 1")
+    cur.execute("create task b after root as select 1")
+    cur.execute("create task c after a, b as select 1")
     cur.execute("drop task root")
-    cur.execute("alter task c resume")
-    cur.execute("alter task a resume")
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=r"Unreachable task DB1\.SCHEMA1\.B found\. The graph has more than one root task \(one without "
+        r"predecessors\)\.",
+    ) as e:
+        cur.execute("execute task a")
+    assert (e.value.errno, e.value.sqlstate) == (91419, "22000")
 
 
-def test_execute_task_join_waits_for_resumed_predecessor_in_other_graph(
-    cur: snowflake.connector.cursor.SnowflakeCursor, log: None
-):
-    _split_join_by_drop(cur)
-    cur.execute("alter task b resume")
-    cur.execute("execute task a")
-    assert _log(cur) == ["a"]
+def test_execute_task_after_remove_after_split_join_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task root as select 1")
+    cur.execute("create task a after root as select 1")
+    cur.execute("create task b after root as select 1")
+    cur.execute("create task c after a, b as select 1")
+    cur.execute("alter task a remove after root")
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match=r"Unreachable task DB1\.SCHEMA1\.A found"):
+        cur.execute("execute task root")
 
 
-def test_execute_task_join_ignores_suspended_predecessor_in_other_graph(
-    cur: snowflake.connector.cursor.SnowflakeCursor, log: None
-):
-    _split_join_by_drop(cur)
-    cur.execute("execute task a")
-    assert _log(cur) == ["a", "c"]
+def test_execute_task_with_predecessors_in_different_graphs_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task r1 as select 1")
+    cur.execute("create task r2 as select 1")
+    cur.execute("create task c after r1, r2 as select 1")
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match=r"Unreachable task DB1\.SCHEMA1\.R2 found"):
+        cur.execute("execute task r1")
+
+
+def test_execute_task_in_cycle_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task a as select 1")
+    cur.execute("create task b after a as select 1")
+    cur.execute("alter task a add after b")
+    with pytest.raises(snowflake.connector.errors.ProgrammingError, match="cannot be called on non-root task"):
+        cur.execute("execute task a")
 
 
 def test_execute_task_suspended_child_has_no_history_row(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -1548,10 +1820,11 @@ def test_execute_child_task_raises(cur: snowflake.connector.cursor.SnowflakeCurs
     cur.execute("create task child after root as select 1")
     with pytest.raises(
         snowflake.connector.errors.ProgrammingError,
-        match=r"Cannot execute task DB1\.SCHEMA1\.CHILD: EXECUTE TASK can only run a standalone or root task\.",
+        match=r"Execute task cannot be called on non-root task DB1\.SCHEMA1\.CHILD\. Call EXECUTE TASK on the root "
+        r"task of its graph instead\.",
     ) as e:
         cur.execute("execute task child")
-    assert (e.value.errno, e.value.sqlstate) == (2003, "02000")
+    assert (e.value.errno, e.value.sqlstate) == (91435, "22000")
 
 
 def test_execute_missing_task_raises(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -1580,28 +1853,31 @@ def test_execute_task_runs_as_owner_role(_fakesnow: None):
         assert cur.fetchall() == [("SYSADMIN",)]
 
 
-def test_execute_task_commits_callers_transaction(_fakesnow: None):
+def test_execute_task_leaves_callers_transaction_uncommitted(_fakesnow: None):
     with snowflake.connector.connect(database="db1", schema="schema1", autocommit=False) as conn:
         cur = conn.cursor()
         cur.execute("create table t (i int)")
         cur.execute("create task t1 as select 1")
+        conn.commit()
         cur.execute("insert into t values (1)")
         cur.execute("execute task t1")
         conn.rollback()
         cur.execute("select i from t")
-        assert cur.fetchall() == [(1,)]
+        assert cur.fetchall() == []
 
 
-def test_execute_task_sees_callers_uncommitted_writes(_fakesnow: None):
+def test_execute_task_doesnt_see_callers_uncommitted_writes(_fakesnow: None):
     with snowflake.connector.connect(database="db1", schema="schema1", autocommit=False) as conn:
         cur = conn.cursor()
         cur.execute("create table t (i int)")
         cur.execute("create table copied (i int)")
         cur.execute("create task t1 as insert into copied select * from t")
+        conn.commit()
         cur.execute("insert into t values (1)")
         cur.execute("execute task t1")
+        conn.rollback()
         cur.execute("select i from copied")
-        assert cur.fetchall() == [(1,)]
+        assert cur.fetchall() == []
 
 
 def test_execute_task_quoted_name(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -1642,7 +1918,7 @@ def test_execute_task_sets_last_committed_on(cur: snowflake.connector.cursor.Sno
         ("query_text", "select 1"),
         ("state", "SUCCEEDED"),
         ("error_code", None),
-        ("scheduled_from", "EXECUTE_TASK"),
+        ("scheduled_from", "EXECUTE TASK"),
         ("attempt_number", 1),
     ],
 )
@@ -1670,7 +1946,7 @@ def test_execute_task_history_failed_row_state(cur: snowflake.connector.cursor.S
 def test_execute_task_history_failed_row_has_error_code(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create task t1 as select * from missing")
     cur.execute("execute task t1")
-    assert _history(cur, "error_code") == [(2003,)]
+    assert _history(cur, "error_code") == [("002003",)]
 
 
 def test_execute_task_history_failed_row_has_error_message(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -1684,7 +1960,7 @@ def test_execute_task_history_failed_row_has_error_message(cur: snowflake.connec
 def test_execute_task_history_when_false_row(
     cur: snowflake.connector.cursor.SnowflakeCursor, column: str, expected: str | None
 ):
-    cur.execute("create task t1 when 1 = 2 as select 1")
+    cur.execute("create task t1 warehouse = wh when 1 = 2 as select 1")
     cur.execute("execute task t1")
     assert _history(cur, column) == [(expected,)]
 
@@ -1707,7 +1983,7 @@ def test_execute_task_history_run_id_is_scheduled_time_in_ms(cur: snowflake.conn
 def _run_graph_twice(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select 1")
-    cur.execute("select system$task_dependents_enable('root')")
+    _enable_dependents(cur, "root")
     cur.execute("execute task root")
     cur.execute("execute task root")
 
@@ -1733,21 +2009,41 @@ def test_execute_task_history_root_task_id_shared(cur: snowflake.connector.curso
 def test_execute_task_using_config_merges_config(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("""create task t1 config = '{"a": 1}' as select 1""")
     cur.execute("""execute task t1 using config = '{"b": 2}'""")
-    assert indent(_history(cur, "config")) == [('{\n  "a": 1,\n  "b": 2\n}',)]
+    # compact, as Snowflake renders a merged config
+    assert _history(cur, "config") == [('{"a":1,"b":2}',)]
 
 
 def test_execute_task_using_config_overrides_matching_field(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("""create task t1 config = '{"a": 1}' as select 1""")
     cur.execute("""execute task t1 using config = '{"a": 2}'""")
-    assert indent(_history(cur, "config")) == [('{\n  "a": 2\n}',)]
+    assert _history(cur, "config") == [('{"a":2}',)]
 
 
 def test_execute_task_using_config_merges_nested_fields(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("""create task t1 config = '{"env": "prod", "paths": {"logs": "l", "results": "r"}}' as select 1""")
     cur.execute("""execute task t1 using config = '{"paths": {"results": "t"}}'""")
-    assert indent(_history(cur, "config")) == [
-        ('{\n  "env": "prod",\n  "paths": {\n    "logs": "l",\n    "results": "t"\n  }\n}',)
-    ]
+    assert _history(cur, "config") == [('{"env":"prod","paths":{"logs":"l","results":"t"}}',)]
+
+
+def test_create_task_keeps_session_variable_in_body(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("set v = 'x'")
+    cur.execute("create task t1 as select $v")
+    assert _show(cur, "definition") == [("select $v",)]
+
+
+def test_execute_task_with_session_variable_fails(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("set v = 'x'")
+    cur.execute("create task t1 as select $v")
+    cur.execute("execute task t1")
+    ((state, error_message),) = _history(cur, "state, error_message")
+    assert (state, error_message.endswith("Session variable '$V' does not exist")) == ("FAILED", True)
+
+
+def test_execute_task_scheduled_by_user(_fakesnow: None):
+    with snowflake.connector.connect(database="db1", schema="schema1", user="someone") as conn, conn.cursor() as cur:
+        cur.execute("create task t1 as select 1")
+        cur.execute("execute task t1")
+        assert _history(cur, "scheduled_by_user") == [("SOMEONE",)]
 
 
 def test_execute_task_history_records_root_config(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -1762,7 +2058,7 @@ def test_execute_task_history_records_root_config(cur: snowflake.connector.curso
         ("root_task_name", "ROOT"),
         ("schema_name", "SCHEMA1"),
         ("state", "SUCCEEDED"),
-        ("scheduled_from", "EXECUTE_TASK"),
+        ("scheduled_from", "EXECUTE TASK"),
         ("attempt_number", 1),
     ],
 )
@@ -1775,26 +2071,26 @@ def test_execute_task_graph_run_succeeded(
 
 
 @pytest.mark.parametrize(
-    "column, expected", [("state", "FAILED"), ("first_error_task_name", "CHILD"), ("first_error_code", 2003)]
+    "column, expected", [("state", "FAILED"), ("first_error_task_name", "CHILD"), ("first_error_code", "002003")]
 )
 def test_execute_task_graph_run_failed_records_first_error(
     cur: snowflake.connector.cursor.SnowflakeCursor, column: str, expected: object
 ):
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select * from missing")
-    cur.execute("select system$task_dependents_enable('root')")
+    _enable_dependents(cur, "root")
     cur.execute("execute task root")
     assert _graph_runs(cur, column) == [(expected,)]
 
 
 def test_complete_task_graphs_excludes_skipped_root(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("create task root when 1 = 2 as select 1")
+    cur.execute("create task root warehouse = wh when 1 = 2 as select 1")
     cur.execute("execute task root")
     assert _graph_runs(cur, "state") == []
 
 
 def test_task_history_keeps_skipped_root(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("create task root when 1 = 2 as select 1")
+    cur.execute("create task root warehouse = wh when 1 = 2 as select 1")
     cur.execute("execute task root")
     assert _history(cur, "state") == [("SKIPPED",)]
 
@@ -1836,7 +2132,7 @@ def test_execute_task_runs_siblings_by_name(cur: snowflake.connector.cursor.Snow
     _logging_task(cur, "root")
     _logging_task(cur, "b", "after root")
     _logging_task(cur, "a", "after root")
-    cur.execute("select system$task_dependents_enable('root')")
+    _enable_dependents(cur, "root")
     cur.execute("execute task root")
     assert _log(cur) == ["root", "a", "b"]
 
@@ -1854,18 +2150,19 @@ def test_execute_task_keeps_changes_made_by_its_body(cur: snowflake.connector.cu
     assert _show(cur, "comment") == [("changed",)]
 
 
-def test_execute_task_sees_writes_after_explicit_begin(cur: snowflake.connector.cursor.SnowflakeCursor):
+def test_execute_task_doesnt_see_writes_after_explicit_begin(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create table t (i int)")
     cur.execute("create table copied (i int)")
     cur.execute("create task t1 as insert into copied select * from t")
     cur.execute("begin")
     cur.execute("insert into t values (1)")
     cur.execute("execute task t1")
+    cur.execute("rollback")
     cur.execute("select i from copied")
-    assert cur.fetchall() == [(1,)]
+    assert cur.fetchall() == []
 
 
-def test_execute_task_commits_explicit_transaction(cur: snowflake.connector.cursor.SnowflakeCursor):
+def test_execute_task_leaves_explicit_transaction_uncommitted(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create table t (i int)")
     cur.execute("create task t1 as select 1")
     cur.execute("begin")
@@ -1873,7 +2170,7 @@ def test_execute_task_commits_explicit_transaction(cur: snowflake.connector.curs
     cur.execute("execute task t1")
     cur.execute("rollback")
     cur.execute("select i from t")
-    assert cur.fetchall() == [(1,)]
+    assert cur.fetchall() == []
 
 
 def test_execute_task_history_survives_callers_rollback(_fakesnow: None):
@@ -1897,7 +2194,7 @@ def test_execute_task_using_dollar_quoted_config(cur: snowflake.connector.cursor
 def test_execute_task_quoted_mixed_case_graph(cur: snowflake.connector.cursor.SnowflakeCursor, log: None):
     cur.execute("""create task "My Root" as insert into log (name) values ('My Root')""")
     cur.execute("""create task "my child" after "My Root" as insert into log (name) values ('my child')""")
-    cur.execute("""select system$task_dependents_enable('"My Root"')""")
+    _enable_dependents(cur, '"My Root"')
     cur.execute('execute task "My Root"')
     assert _log(cur) == ["My Root", "my child"]
 
@@ -1913,7 +2210,7 @@ def test_execute_quoted_child_task_raises(cur: snowflake.connector.cursor.Snowfl
     cur.execute('create task "my child" after "My Root" as select 1')
     with pytest.raises(
         snowflake.connector.errors.ProgrammingError,
-        match=r"Cannot execute task DB1\.SCHEMA1\.my child: EXECUTE TASK can only run a standalone or root task\.",
+        match=r"Execute task cannot be called on non-root task DB1\.SCHEMA1\.my child\.",
     ):
         cur.execute('execute task "my child"')
 
@@ -1942,9 +2239,55 @@ def test_set_return_value_inside_expression(cur: snowflake.connector.cursor.Snow
 
 
 def test_set_return_value_in_scalar_subquery(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select (select system$set_return_value('x'))")
+    cur.execute("execute task t1")
+    assert _history(cur, "return_value") == [("x",)]
+
+
+def test_set_return_value_of_column_fails(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create table input_table (v varchar)")
     cur.execute("insert into input_table values ('x')")
-    cur.execute("create task t1 as select (select system$set_return_value(v) from input_table limit 1)")
+    cur.execute("create task t1 as select system$set_return_value(v) from input_table")
+    cur.execute("execute task t1")
+    assert _history(cur, "state") == [("FAILED",)]
+
+
+def test_set_return_value_of_column_error(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table input_table (v varchar)")
+    cur.execute("create task t1 as select system$set_return_value(v) from input_table")
+    cur.execute("execute task t1")
+    ((error_message,),) = _history(cur, "error_message")
+    assert error_message.startswith(
+        "SQL compilation error:\nargument 1 to function SYSTEM$SET_RETURN_VALUE needs to be constant, found '"
+    )
+
+
+def test_set_return_value_of_number_fails(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select system$set_return_value(42)")
+    cur.execute("execute task t1")
+    assert _history(cur, "error_message") == [
+        (
+            "SQL compilation error:\nargument 1 to function SYSTEM$SET_RETURN_VALUE needs to be constant, found "
+            "'CAST(42 AS VARCHAR(134217728))'",
+        )
+    ]
+
+
+def test_set_return_value_of_concatenation(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select system$set_return_value('a' || 'b')")
+    cur.execute("execute task t1")
+    assert _history(cur, "return_value") == [("ab",)]
+
+
+def test_set_return_value_last_call_wins(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create task t1 as select system$set_return_value('first'), system$set_return_value('second')")
+    cur.execute("execute task t1")
+    assert _history(cur, "return_value") == [("second",)]
+
+
+def test_set_return_value_without_rows(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table empty_table (v varchar)")
+    cur.execute("create task t1 as select system$set_return_value('x') from empty_table")
     cur.execute("execute task t1")
     assert _history(cur, "return_value") == [("x",)]
 
@@ -1956,33 +2299,18 @@ def test_set_return_value_in_insert(cur: snowflake.connector.cursor.SnowflakeCur
     assert _history(cur, "return_value") == [("done",)]
 
 
-def test_set_return_value_in_insert_inserts_value(cur: snowflake.connector.cursor.SnowflakeCursor):
+def test_set_return_value_returns_success(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("create table seen (v varchar)")
     cur.execute("create task t1 as insert into seen select system$set_return_value('done')")
     cur.execute("execute task t1")
     cur.execute("select v from seen")
-    assert cur.fetchall() == [("done",)]
-
-
-def test_set_return_value_evaluates_argument_once(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("create table seen (v varchar)")
-    cur.execute("create task t1 as insert into seen select system$set_return_value(random()::varchar)")
-    cur.execute("execute task t1")
-    cur.execute("select v from seen")
-    inserted = cur.fetchall()
-    assert _history(cur, "return_value") == inserted
-
-
-def test_set_return_value_stringifies_result(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("create task t1 as select system$set_return_value(40 + 2)")
-    cur.execute("execute task t1")
-    assert _history(cur, "return_value") == [("42",)]
+    assert cur.fetchall() == [("SUCCESS",)]
 
 
 def test_predecessor_return_value_in_child(cur: snowflake.connector.cursor.SnowflakeCursor):
     _create_root_returning_value(cur)
     cur.execute("create task child after root as insert into seen select system$get_predecessor_return_value('ROOT')")
-    cur.execute("select system$task_dependents_enable('root')")
+    _enable_dependents(cur, "root")
     cur.execute("execute task root")
     cur.execute("select v from seen")
     assert cur.fetchall() == [("from root",)]
@@ -1992,7 +2320,7 @@ def test_predecessor_return_value_from_ancestor(cur: snowflake.connector.cursor.
     _create_root_returning_value(cur)
     cur.execute("create task mid after root as select 1")
     cur.execute("create task leaf after mid as insert into seen select system$get_predecessor_return_value('ROOT')")
-    cur.execute("select system$task_dependents_enable('root')")
+    _enable_dependents(cur, "root")
     cur.execute("execute task root")
     cur.execute("select v from seen")
     assert cur.fetchall() == [("from root",)]
@@ -2004,7 +2332,7 @@ def test_set_return_value_passes_on_predecessor_value_with_suffix(cur: snowflake
         "create task child after root as "
         "select system$set_return_value(system$get_predecessor_return_value('ROOT') || 'y')"
     )
-    cur.execute("select system$task_dependents_enable('root')")
+    _enable_dependents(cur, "root")
     cur.execute("execute task root")
     assert _history(cur, "return_value", "child") == [("from rooty",)]
 
@@ -2012,7 +2340,7 @@ def test_set_return_value_passes_on_predecessor_value_with_suffix(cur: snowflake
 def test_predecessor_return_value_without_argument(cur: snowflake.connector.cursor.SnowflakeCursor):
     _create_root_returning_value(cur)
     cur.execute("create task child after root as insert into seen select system$get_predecessor_return_value()")
-    cur.execute("select system$task_dependents_enable('root')")
+    _enable_dependents(cur, "root")
     cur.execute("execute task root")
     cur.execute("select v from seen")
     assert cur.fetchall() == [("from root",)]
@@ -2025,7 +2353,7 @@ def test_predecessor_return_value_quoted_name(cur: snowflake.connector.cursor.Sn
         """create task child after "My Root" as
         insert into seen select system$get_predecessor_return_value('My Root')"""
     )
-    cur.execute("""select system$task_dependents_enable('"My Root"')""")
+    _enable_dependents(cur, '"My Root"')
     cur.execute('execute task "My Root"')
     cur.execute("select v from seen")
     assert cur.fetchall() == [("quoted",)]
@@ -2035,7 +2363,7 @@ def _unmatched_predecessor_lookup(cur: snowflake.connector.cursor.SnowflakeCurso
     _create_root_returning_value(cur)
     # task names are case-sensitive, so 'root' doesn't match ROOT
     cur.execute("create task child after root as insert into seen select system$get_predecessor_return_value('root')")
-    cur.execute("select system$task_dependents_enable('root')")
+    _enable_dependents(cur, "root")
     cur.execute("execute task root")
 
 
@@ -2049,6 +2377,18 @@ def test_predecessor_return_value_suspended_predecessor_name_fails(cur: snowflak
     cur.execute("alter task c resume")
     cur.execute("execute task root")
     assert _history(cur, "state", "c") == [("FAILED",)]
+
+
+def test_predecessor_return_value_unmatched_name_error(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _unmatched_predecessor_lookup(cur)
+    assert _history(cur, "error_code, error_message", "child") == [
+        (
+            "091451",
+            "The predecessor root specified in call to system$get_predecessor_return_value() is not a valid or active "
+            "predecessor for this task. Note that system$get_predecessor_return_value() does not support fully "
+            "qualified names including database or schema.",
+        )
+    ]
 
 
 def test_predecessor_return_value_unmatched_name_fails(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -2085,7 +2425,7 @@ def test_predecessor_return_value_in_when(cur: snowflake.connector.cursor.Snowfl
         when system$get_predecessor_return_value('ROOT') = 'go'
         as insert into seen values ('ran')"""
     )
-    cur.execute("select system$task_dependents_enable('root')")
+    _enable_dependents(cur, "root")
     cur.execute("execute task root")
     cur.execute("select v from seen")
     assert cur.fetchall() == [("ran",)]
@@ -2096,7 +2436,8 @@ def test_get_task_graph_config(cur: snowflake.connector.cursor.SnowflakeCursor):
     cur.execute("""create task t1 config = '{"a": 1}' as insert into seen select system$get_task_graph_config()""")
     cur.execute("execute task t1")
     cur.execute("select v from seen")
-    assert indent(cur.fetchall()) == [('{\n  "a": 1\n}',)]
+    # as written
+    assert cur.fetchall() == [('{"a": 1}',)]
 
 
 def test_get_task_graph_config_key(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -2125,6 +2466,10 @@ def test_get_task_graph_config_array_index_path(cur: snowflake.connector.cursor.
     assert _config_value(cur, '{"dirs": ["a", "b"]}', "dirs[1]") == [("b",)]
 
 
+def test_get_task_graph_config_object_path_is_compact(cur: snowflake.connector.cursor.SnowflakeCursor):
+    assert _config_value(cur, '{"o": {"p": 1}}', "o") == [('{"p":1}',)]
+
+
 def test_get_task_graph_config_missing_path(cur: snowflake.connector.cursor.SnowflakeCursor):
     assert _config_value(cur, '{"sink": {"table": "events"}}', "sink.missing") == [(None,)]
 
@@ -2134,7 +2479,7 @@ def test_get_task_graph_config_using_config(cur: snowflake.connector.cursor.Snow
     cur.execute("""create task t1 config = '{"a": 1}' as insert into seen select system$get_task_graph_config()""")
     cur.execute("""execute task t1 using config = '{"b": 2}'""")
     cur.execute("select v from seen")
-    assert indent(cur.fetchall()) == [('{\n  "a": 1,\n  "b": 2\n}',)]
+    assert cur.fetchall() == [('{"a":1,"b":2}',)]
 
 
 def test_current_user_task_name(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -2151,7 +2496,7 @@ def test_task_runtime_info_current_root_task_name(cur: snowflake.connector.curso
     cur.execute(
         "create task child after root as insert into seen select system$task_runtime_info('CURRENT_ROOT_TASK_NAME')"
     )
-    cur.execute("select system$task_dependents_enable('root')")
+    _enable_dependents(cur, "root")
     cur.execute("execute task root")
     cur.execute("select v from seen")
     assert cur.fetchall() == [("DB1.SCHEMA1.ROOT",)]
@@ -2173,18 +2518,32 @@ def test_task_functions_match_case_insensitively(cur: snowflake.connector.cursor
     assert cur.fetchall() == [("DB1.SCHEMA1.T1",)]
 
 
+def test_current_user_task_name_outside_task_is_empty(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("select system$current_user_task_name()")
+    assert cur.fetchall() == [("",)]
+
+
+def test_current_user_task_name_outside_task_column_name(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("select system$current_user_task_name()")
+    assert [d.name for d in cur.description] == ["SYSTEM$CURRENT_USER_TASK_NAME()"]
+
+
 @pytest.mark.parametrize(
-    "call",
+    "call, function",
     [
-        "system$current_user_task_name()",
-        "system$task_runtime_info('CURRENT_TASK_NAME')",
-        "system$get_task_graph_config()",
-        "system$get_predecessor_return_value('t')",
+        ("system$task_runtime_info('CURRENT_TASK_NAME')", "SYSTEM$TASK_RUNTIME_INFO"),
+        ("system$get_task_graph_config()", "SYSTEM$GET_TASK_GRAPH_CONFIG"),
+        ("system$get_predecessor_return_value('t')", "SYSTEM$GET_PREDECESSOR_RETURN_VALUE"),
+        ("system$set_return_value('x')", "SYSTEM$SET_RETURN_VALUE"),
     ],
 )
-def test_task_function_outside_task_returns_null(cur: snowflake.connector.cursor.SnowflakeCursor, call: str):
-    cur.execute(f"select {call}")
-    assert cur.fetchall() == [(None,)]
+def test_task_function_outside_task_raises(cur: snowflake.connector.cursor.SnowflakeCursor, call: str, function: str):
+    with pytest.raises(
+        snowflake.connector.errors.ProgrammingError,
+        match=rf"Function {re.escape(function)} must be called from within a task\.",
+    ) as e:
+        cur.execute(f"select {call}")
+    assert (e.value.errno, e.value.sqlstate) == (91430, "22000")
 
 
 def _runtime_info(cur: snowflake.connector.cursor.SnowflakeCursor, field: str) -> str:
@@ -2206,8 +2565,10 @@ def test_task_runtime_info_current_root_task_uuid(cur: snowflake.connector.curso
     assert _show(cur, "id", "t1") == [(value,)]
 
 
-def test_task_runtime_info_original_scheduled_timestamp_is_utc(cur: snowflake.connector.cursor.SnowflakeCursor):
-    assert _runtime_info(cur, "CURRENT_TASK_GRAPH_ORIGINAL_SCHEDULED_TIMESTAMP").endswith("+0000")
+def test_task_runtime_info_original_scheduled_timestamp_format(cur: snowflake.connector.cursor.SnowflakeCursor):
+    # in UTC, to the millisecond, with nine fractional digits
+    value = _runtime_info(cur, "CURRENT_TASK_GRAPH_ORIGINAL_SCHEDULED_TIMESTAMP")
+    assert re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3}000000Z", value)
 
 
 def test_task_runtime_info_original_scheduled_timestamp(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -2223,8 +2584,17 @@ def _ambiguous_predecessor_lookup(cur: snowflake.connector.cursor.SnowflakeCurso
     cur.execute("create task a after root as select system$set_return_value('a')")
     cur.execute("create task b after root as select system$set_return_value('b')")
     cur.execute("create task c after a, b as insert into seen select system$get_predecessor_return_value()")
-    cur.execute("select system$task_dependents_enable('root')")
+    _enable_dependents(cur, "root")
     cur.execute("execute task root")
+
+
+def test_get_predecessor_return_value_without_argument_and_several_predecessors_error(
+    cur: snowflake.connector.cursor.SnowflakeCursor,
+):
+    _ambiguous_predecessor_lookup(cur)
+    assert _history(cur, "error_code, error_message", "c") == [
+        ("091450", "No predecessor task specified in call to system$get_predecessor_return_value().")
+    ]
 
 
 def test_get_predecessor_return_value_without_argument_and_several_predecessors_fails(
@@ -2240,11 +2610,6 @@ def test_get_predecessor_return_value_without_argument_and_several_predecessors_
     _ambiguous_predecessor_lookup(cur)
     cur.execute("select count(*) from seen")
     assert cur.fetchall() == [(0,)]
-
-
-def test_set_return_value_outside_task_returns_null(cur: snowflake.connector.cursor.SnowflakeCursor):
-    cur.execute("select system$set_return_value('x')")
-    assert cur.fetchall() == [(None,)]
 
 
 def _table_function(cur: snowflake.connector.cursor.SnowflakeCursor, sql: str) -> list[dict]:
@@ -2301,6 +2666,8 @@ def test_task_history_columns(cur: snowflake.connector.cursor.SnowflakeCursor):
         "GRAPH_RUN_GROUP_ID",
         "BACKFILL_INFO",
         "SPCS_JOB_ID",
+        "SCHEDULED_BY_USER",
+        "GRAPH_ID",
     ]
 
 
@@ -2315,7 +2682,7 @@ def test_task_history_failed_row_has_error_code(cur: snowflake.connector.cursor.
     cur.execute("create task t1 as select * from missing")
     cur.execute("execute task t1")
     (row,) = _table_function(cur, "select * from table(information_schema.task_history())")
-    assert row["ERROR_CODE"] == 2003
+    assert row["ERROR_CODE"] == "002003"
 
 
 def test_task_history_failed_row_has_error_message(cur: snowflake.connector.cursor.SnowflakeCursor):
@@ -2422,7 +2789,7 @@ def test_task_history_survives_caller_rollback(cur: snowflake.connector.cursor.S
 def test_complete_task_graphs_failed_graph(cur: snowflake.connector.cursor.SnowflakeCursor, column: str, expected: str):
     cur.execute("create task root as select 1")
     cur.execute("create task child after root as select * from missing")
-    cur.execute("select system$task_dependents_enable('root')")
+    _enable_dependents(cur, "root")
     cur.execute("execute task root")
     (row,) = _table_function(cur, "select * from table(information_schema.complete_task_graphs())")
     assert row[column] == expected
@@ -2435,7 +2802,6 @@ def test_complete_task_graphs_columns(cur: snowflake.connector.cursor.SnowflakeC
         "DATABASE_NAME",
         "SCHEMA_NAME",
         "STATE",
-        "SCHEDULED_FROM",
         "FIRST_ERROR_TASK_NAME",
         "FIRST_ERROR_CODE",
         "FIRST_ERROR_MESSAGE",
@@ -2447,9 +2813,13 @@ def test_complete_task_graphs_columns(cur: snowflake.connector.cursor.SnowflakeC
         "GRAPH_VERSION",
         "RUN_ID",
         "ATTEMPT_NUMBER",
+        "SCHEDULED_FROM",
         "CONFIG",
         "GRAPH_RUN_GROUP_ID",
         "BACKFILL_INFO",
+        "SCHEDULED_BY_USER",
+        "GRAPH_ID",
+        "GRAPH_NAME",
     ]
 
 
@@ -2593,18 +2963,18 @@ def test_task_dependents_columns(cur: snowflake.connector.cursor.SnowflakeCursor
     _dependents_graph(cur)
     cur.execute("select * from table(information_schema.task_dependents(task_name => 'root'))")
     assert [d.name for d in cur.description] == [
-        "created_on",
-        "name",
-        "database_name",
-        "schema_name",
-        "owner",
-        "comment",
-        "warehouse",
-        "schedule",
-        "predecessors",
-        "state",
-        "definition",
-        "condition",
+        "CREATED_ON",
+        "NAME",
+        "DATABASE_NAME",
+        "SCHEMA_NAME",
+        "OWNER",
+        "COMMENT",
+        "WAREHOUSE",
+        "SCHEDULE",
+        "PREDECESSORS",
+        "STATE",
+        "DEFINITION",
+        "CONDITION",
     ]
 
 

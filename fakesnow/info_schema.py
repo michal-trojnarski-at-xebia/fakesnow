@@ -294,6 +294,7 @@ create table if not exists ${catalog}._fs_information_schema._fs_tasks (
     last_committed_on TIMESTAMPTZ,
     last_suspended_on TIMESTAMPTZ,
     last_suspended_reason VARCHAR,
+    created_by_user VARCHAR,
     PRIMARY KEY (schema_name, name)
 )
     """
@@ -320,7 +321,8 @@ create table if not exists ${catalog}._fs_information_schema._fs_task_history (
     SCHEDULED_FROM VARCHAR,
     ATTEMPT_NUMBER INTEGER,
     CONFIG VARCHAR,
-    GRAPH_RUN_GROUP_ID VARCHAR
+    GRAPH_RUN_GROUP_ID VARCHAR,
+    SCHEDULED_BY_USER VARCHAR
 )
     """
 )
@@ -343,7 +345,8 @@ create table if not exists ${catalog}._fs_information_schema._fs_task_graph_runs
     RUN_ID BIGINT,
     ATTEMPT_NUMBER INTEGER,
     CONFIG VARCHAR,
-    GRAPH_RUN_GROUP_ID VARCHAR
+    GRAPH_RUN_GROUP_ID VARCHAR,
+    SCHEDULED_BY_USER VARCHAR
 )
     """
 )

@@ -22,7 +22,8 @@ same `FakeSnow` instance.
 - Tests assert live Snowflake behaviour (AGENTS.md). Values the docs don't pin are provisional: each is a named
   constant in the module that owns it and is listed under "Live checks" at the end, to verify with `snowflake-check`.
 - One behaviour per test (AGENTS.md "Keep tests behavior-focused"). JSON/VARIANT results compared as strings use
-  `tests.utils.indent`/`dindent`.
+  `tests.utils.indent`/`dindent`, except text columns Snowflake renders compact or as written, eg: `task_relations`
+  and TASK_HISTORY `CONFIG`, which are compared as Snowflake returns them.
 - Task logic lives in `fakesnow/tasks/`; the cursor only dispatches to it (spec anti-goal "Spreading responsibility
   across callers").
 - Task definitions and history are stored per database under `<db>._fs_information_schema`, never in `_fs_global`.
@@ -508,79 +509,54 @@ Test `tests/test_tasks.py`
 
 ## Live checks
 
-Provisional values to verify with `snowflake-check` and correct in their owning module and tests:
+Verified with `snowflake-check` on 2026-10-25 (Snowflake 10.38, role ACCOUNTADMIN, serverless tasks), and fakesnow
+corrected to match. What fakesnow now does, as Snowflake does:
 
-1. Status rows: CREATE/DROP/ALTER TASK, CREATE IF NOT EXISTS on an existing task, CREATE OR ALTER on an existing
-   task (currently the CREATED status), DROP TASK IF EXISTS on a missing task (`DROP_MISSING`), EXECUTE TASK.
-2. Errors: missing task, unknown property, duplicate CREATE (`ALREADY_EXISTS`), missing schema or database on CREATE, started root, missing/other-schema predecessor, schedule on a child,
-   finalizer rules (incl. non-root and self), predecessors in different graphs, cycle, limits, EXECUTE TASK on a child.
-   DROP / CREATE OR REPLACE of a started standalone task: allowed (the replacement is suspended); of a started root
-   with dependents: rejected. CREATE OR ALTER of a started standalone task: rejected.
-3. SHOW TASKS / DESCRIBE TASK columns and values (spec check 1).
-4. Current database/schema inside a task run; `SYSTEM$` task functions outside a task (spec check 4; fakesnow: every
-   one returns NULL, including `SYSTEM$SET_RETURN_VALUE`).
-5. Whether `WHEN` false on a child still lets the finalizer run (spec check 5).
-6. EXECUTE TASK inside an explicit transaction: rejected or commits (spec check 10).
-7. `SYSTEM$TASK_DEPENDENTS_ENABLE` and `SYSTEM$SET_RETURN_VALUE` return values (fakesnow: `SET_RETURN_VALUE` returns its
-   argument inside a task and NULL outside).
-8. Whether resuming a standalone task without a SCHEDULE is allowed.
-9. `EXECUTE TASK ... USING CONFIG` merges into the root's CONFIG object by object, as the docs say; the rendering of
-   the merged config in TASK_HISTORY (fakesnow: `json.dumps`, eg: `{"a": 1, "b": 2}`).
-10. ALTER TASK: `last_suspended_reason` `USER_SUSPENDED` after `ALTER TASK ... SUSPEND`; the SYSTEM$TASK_DEPENDENTS_ENABLE
-    result column name (`SYSTEM$TASK_DEPENDENTS_ENABLE('<arg as written>')`) and whether it also resumes the root's
-    finalizer; `ADD AFTER` on a task that has a schedule (currently `SCHEDULED_CHILD`) or that already has children
-    (merging graphs is not rejected); `UNSET` of an unknown property (`INVALID_PROPERTY`).
-11. `ALTER TASK ... REMOVE AFTER` of a task that isn't a predecessor: raises or is a no-op (fakesnow: silent no-op).
-12. `ALTER TASK ... SUSPEND` of an already suspended task: whether it overwrites `last_suspended_on` and
-    `last_suspended_reason` (fakesnow: overwrites, with `USER_SUSPENDED`).
-13. SHOW TASKS / DESCRIBE TASK values (`fakesnow/tasks/show.py`): `owner_role_type` (`OWNER_ROLE_TYPE`), the text
-    rendering of `allow_overlapping_execution` (`OVERLAP_TRUE`/`OVERLAP_FALSE`, NULL on child tasks), NULL
-    `scheduling_mode` and `execute_as_user`, and the missing-database error text (`DATABASE_DOES_NOT_EXIST`).
-14. `SHOW TASKS ... ROOT ONLY`: whether a finalizer (no predecessors, but not a root) is included (fakesnow: included).
-15. `SHOW TASKS IN SCHEMA <missing>`: no rows or an error (fakesnow: no rows; a missing database raises).
-16. EXECUTE TASK runs (`fakesnow/tasks/runner.py`): whether a suspended finalizer is skipped like a suspended child
-    (fakesnow: skipped); whether TASK_HISTORY `CONFIG` is set on every task row of the run or only the root's
-    (fakesnow: every row); a skipped task's `QUERY_ID` and `QUERY_START_TIME` (fakesnow: NULL); a child's
-    `SCHEDULED_TIME` (fakesnow: when it became ready to run); a `WHEN` that raises (fakesnow: `FAILED`).
-17. `SYSTEM$` task functions (`fakesnow/tasks/functions.py`): `TASK_RUNTIME_INFO('CURRENT_TASK_NAME')` and
-    `'CURRENT_ROOT_TASK_NAME'` return the fqname (fakesnow: `DB.SCHEMA.TASK`); `SYSTEM$CURRENT_USER_TASK_NAME()` returns
-    the fqname too, as the docs' example shows; the format of `'CURRENT_TASK_GRAPH_ORIGINAL_SCHEDULED_TIMESTAMP'` (fakesnow: UTC,
-    `%Y-%m-%dT%H:%M:%S.%f%z`); `GET_PREDECESSOR_RETURN_VALUE()` with no argument and several predecessors (fakesnow:
-    NULL).
-18. Task table functions (`fakesnow/tasks/history.py`): `RESULT_LIMIT` keeps the newest rows (default
-    `DEFAULT_RESULT_LIMIT`, 100) and rows come newest first; `ERROR_ONLY` means `FAILED` or `CANCELLED`
-    (`ERROR_STATES`); `TASK_NAME`, `ROOT_TASK_NAME` and `SCHEMA_NAME` match case-insensitively; `DATABASE_NAME` filters the
-    database of the `INFORMATION_SCHEMA` it is called on; unrecorded columns are NULL and `GRAPH_VERSION` is
-    `GRAPH_VERSION` (1); the column names of `TASK_DEPENDENTS` are those of SHOW TASKS (lower case) where the history
-    functions' are upper case; `TASK_DEPENDENTS` includes the named task itself and a finalizer is a dependent of the
-    task it finalizes; an unqualified `TASK_NAME` is looked up in the current schema.
-19. Session variables (`$v`) in a task body: whether Snowflake stores the body as written, resolving them when the task
-    runs (fakesnow: inlines them at CREATE time).
-20. The `RETURN_VALUE` recorded for `INSERT ... SELECT system$set_return_value(...)` (fakesnow: the row count) and for a
-    boolean value (fakesnow: `'True'`).
-21. Making a root that has a finalizer into a child (`ALTER TASK root ADD AFTER parent`, or `SET FINALIZE`) — fakesnow
-    rejects it with `Invalid finalizer task <finalizer>: <root> is not a root task.`
-22. `FINALIZE = <root in another schema>` — fakesnow rejects it with the predecessor message,
-    `Task <fin> cannot depend on task <root> in a different schema.`
-23. A task with several predecessors, all suspended, doesn't run (per the docs); fakesnow also doesn't run its
-    dependents, as if it had been skipped, which the docs don't say.
-24. Removing a predecessor so that a task downstream would have predecessors in different graphs — fakesnow rejects
-    it with `Task <downstream> cannot have predecessors in different task graphs.`
-25. `SYSTEM$GET_TASK_GRAPH_CONFIG(path)` follows a GET_PATH path (fakesnow: `a.b`, `a[0]`, `a['b']` and `"a.b"` steps,
-    case-sensitive keys, a string value unquoted and any other value as JSON).
-26. `SHOW TASKS ... LIMIT n FROM 'name'` returns the rows following the name (fakesnow: `name > 'name'`, also for a
-    partial name); `SYSTEM$GET_PREDECESSOR_RETURN_VALUE('name')` matches the name case-sensitively, as the docs say,
-    and a name matching no enabled predecessor or ancestor gives NULL (the docs say the call fails).
-27. DROP of a shared predecessor (`ROOT → A/B → C`, drop ROOT) is allowed as the docs say, leaving C with predecessors
-    in two graphs; running one of them, fakesnow runs C only if every other resumed predecessor is in that run
-    (a suspended one doesn't count). Compare with 24, where REMOVE AFTER is rejected instead.
-28. A suspended child is suspended whatever its predecessors' states, so a join (`D after ROOT, C`) ignores a suspended
-    C even when all of C's own predecessors are suspended, or one of them failed. The docs don't say what a suspended
-    child does when one of its predecessors fails: fakesnow follows "the graph continues as though the child task had
-    succeeded", so a dependent of the suspended child still runs.
-29. `SYSTEM$GET_PREDECESSOR_RETURN_VALUE()` without a name, in a task with several enabled predecessors, fails the task
-    (the docs say the name is required then). The error code and message are provisional (fakesnow: 100357, "needs a
-    task name when the task has several enabled predecessors"). A name that matches neither an enabled predecessor nor
-    an ancestor fails the same way (fakesnow: "'<name>' is not an enabled predecessor of the task").
-30. `TASK_DEPENDENTS` returns the 12 documented columns, `created_on` to `condition` (fakesnow projects exactly those from
-    the SHOW TASKS row). Live Snowflake may return more, eg: the later SHOW TASKS additions.
+1. Transactions: CREATE TASK neither commits the open transaction nor is undone by its rollback. ALTER TASK and DROP TASK
+   commit it. EXECUTE TASK doesn't commit it, and the run doesn't see its uncommitted writes.
+2. Resuming needs a trigger: a task without SCHEDULE, AFTER, FINALIZE or WHEN fails with 091453. A root or standalone
+   task triggered only by WHEN, without a warehouse, needs TARGET_COMPLETION_INTERVAL to be resumed or executed (091865).
+   SUSPEND of a suspended task changes nothing.
+3. `SYSTEM$TASK_DEPENDENTS_ENABLE` returns `'OK'`, in a column named by the upper-cased call. It resumes the dependents
+   first, so they stay resumed when the root can't be. A missing task fails with 1008 (`RECURSIVE_TASK_ENABLE`).
+4. Graph shape is checked by EXECUTE TASK, not the DDL: predecessors in different graphs, a cycle, a join split by
+   REMOVE AFTER or DROP, and SET FINALIZE on a root that has a finalizer are all accepted. EXECUTE TASK then fails with
+   091419 (unreachable task) or, in a cycle, 091435 (non-root task). CREATE OR REPLACE of a started root with dependents
+   and CREATE OR ALTER of a started standalone task are accepted, the latter keeping its state.
+5. A task runs once all its resumed predecessors succeeded, and needs at least one: suspended predecessors are ignored,
+   so a task after only suspended ones, eg: a dependent of a suspended child, doesn't run. Tasks run in waves, children
+   before grandchildren.
+6. WHEN may only use constants, comparisons, AND/OR/NOT, BETWEEN, conversions and the four documented SYSTEM$ functions
+   (091464 otherwise, at CREATE or MODIFY WHEN).
+7. `SYSTEM$SET_RETURN_VALUE` returns `'SUCCESS'`. Its argument must be a string constant (concatenations of constants
+   and task functions included), else the task fails with 1015. The value is set when the statement is compiled: the
+   last call wins, even if no row is produced.
+8. Outside a task, `SYSTEM$CURRENT_USER_TASK_NAME()` returns `''` and the other task functions fail with 091430.
+9. `SYSTEM$GET_PREDECESSOR_RETURN_VALUE` fails with 091450 without a name when several predecessors are enabled, and
+   with 091451 for a name matching no enabled predecessor or ancestor (case-sensitive).
+10. SHOW TASKS without IN lists the current schema (else the current database, else the account). `LIMIT n FROM 'x'`
+    includes x. ROOT ONLY leaves out finalizers. IN SCHEMA of a missing schema fails.
+11. SHOW TASKS / DESCRIBE TASK columns are in Snowflake's order, with `created_by_user`. An unset comment is `''`,
+    unset integrations and a child's `allow_overlapping_execution` are `'null'`, a root's `overlap_policy` is
+    `NO_OVERLAP` or `ALLOW_CHILD_OVERLAP`. `predecessors` has one name per line, `task_relations` is compact with
+    `FinalizedRootTask` first.
+12. TASK_HISTORY / COMPLETE_TASK_GRAPHS: error codes are zero-padded text (`'002003'`), `SCHEDULED_FROM` is
+    `EXECUTE TASK`, error messages have no code prefix, `SCHEDULED_BY_USER` / `GRAPH_ID` (and `GRAPH_NAME`) are present.
+    A merged USING CONFIG is rendered compact, an unmerged one as written. TASK_DEPENDENTS returns its 12 documented
+    columns in upper case.
+13. `TASK_RUNTIME_INFO('CURRENT_TASK_GRAPH_ORIGINAL_SCHEDULED_TIMESTAMP')` is `YYYY-MM-DD HH:MM:SS.mmm000000Z`.
+14. Session variables in a task body are kept as written, so a run fails when the task session doesn't have them.
+15. Error codes and texts as Snowflake reports them: started root 091421 (22000), missing predecessor 091085, other-schema
+    predecessor 091413, schedule with a predecessor 091400, finalizer rules 091468 / 091470 / 091471 / 091472 / 091497 /
+    091479, a root with a finalizer made a child 091856, unknown property 1420, `Object '<name>' already exists.`, a
+    missing database `Database '<name>' does not exist or not authorized.`, REMOVE AFTER of a non-predecessor 091417.
+
+Still unverified, kept provisional:
+
+- A finalizer with children (`INVALID_FINALIZER` / `FINALIZER_HAS_CHILDREN`), and the graph-size limits.
+- The sqlstate of the `GET_PREDECESSOR_RETURN_VALUE` errors, and the `found` text of a non-constant `SET_RETURN_VALUE`
+  argument for anything but a literal (Snowflake shows a resolved, qualified column name).
+- `created_by_user` / `SCHEDULED_BY_USER`: fakesnow records the `user` given to connect, upper-cased, as it has no
+  other notion of the current user.
+- Snowflake appends a privilege hint to "does not exist or not authorized" messages, which fakesnow leaves out as it
+  does elsewhere.

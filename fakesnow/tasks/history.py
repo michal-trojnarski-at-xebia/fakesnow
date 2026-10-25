@@ -34,7 +34,7 @@ _HISTORY_COLUMNS = """
     query_text AS QUERY_TEXT,
     condition_text AS CONDITION_TEXT,
     state AS STATE,
-    error_code AS ERROR_CODE,
+    lpad(error_code::VARCHAR, 6, '0') AS ERROR_CODE,
     error_message AS ERROR_MESSAGE,
     scheduled_time AS SCHEDULED_TIME,
     query_start_time AS QUERY_START_TIME,
@@ -53,16 +53,17 @@ _HISTORY_COLUMNS = """
     NULL::INTEGER AS QUERY_PARAMETERIZED_HASH_VERSION,
     graph_run_group_id AS GRAPH_RUN_GROUP_ID,
     NULL::VARCHAR AS BACKFILL_INFO,
-    NULL::VARCHAR AS SPCS_JOB_ID"""
+    NULL::VARCHAR AS SPCS_JOB_ID,
+    scheduled_by_user AS SCHEDULED_BY_USER,
+    NULL::VARCHAR AS GRAPH_ID"""
 
 _GRAPH_COLUMNS = """
     root_task_name AS ROOT_TASK_NAME,
     database_name AS DATABASE_NAME,
     schema_name AS SCHEMA_NAME,
     state AS STATE,
-    scheduled_from AS SCHEDULED_FROM,
     first_error_task_name AS FIRST_ERROR_TASK_NAME,
-    first_error_code AS FIRST_ERROR_CODE,
+    lpad(first_error_code::VARCHAR, 6, '0') AS FIRST_ERROR_CODE,
     first_error_message AS FIRST_ERROR_MESSAGE,
     scheduled_time AS SCHEDULED_TIME,
     query_start_time AS QUERY_START_TIME,
@@ -72,9 +73,13 @@ _GRAPH_COLUMNS = """
     {graph_version} AS GRAPH_VERSION,
     run_id AS RUN_ID,
     attempt_number AS ATTEMPT_NUMBER,
+    scheduled_from AS SCHEDULED_FROM,
     config AS CONFIG,
     graph_run_group_id AS GRAPH_RUN_GROUP_ID,
-    NULL::VARCHAR AS BACKFILL_INFO"""
+    NULL::VARCHAR AS BACKFILL_INFO,
+    scheduled_by_user AS SCHEDULED_BY_USER,
+    NULL::VARCHAR AS GRAPH_ID,
+    NULL::VARCHAR AS GRAPH_NAME"""
 
 
 def _literal(value: object) -> str:
@@ -219,9 +224,9 @@ def _complete_task_graphs(
     return _select(columns, graph_runs_table, databases, filters, args)
 
 
-# the documented columns of TASK_DEPENDENTS, a subset of those of SHOW TASKS
+# the documented columns of TASK_DEPENDENTS, a subset of those of SHOW TASKS, in upper case
 _DEPENDENTS_COLUMNS = ", ".join(
-    f"r.{c}"
+    f"r.{c} AS {c.upper()}"
     for c in (
         "created_on",
         "name",

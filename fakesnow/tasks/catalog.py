@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import heapq
 import json
 import uuid
 from dataclasses import dataclass, field, replace
@@ -10,33 +9,53 @@ from datetime import datetime
 from typing import Any
 
 import snowflake.connector.errors
+import sqlglot
 from duckdb import DuckDBPyConnection
+from sqlglot import exp
+from sqlglot.errors import ParseError
 
 from fakesnow import checks
 from fakesnow.tasks.statements import AlterTask, CreateTask, DropTask, TaskName, parse_task_name
 from fakesnow.transforms.temporary import check_schema_exists
 
-# provisional messages and values, to be checked against live Snowflake
 CREATED = "Task {name} successfully created."
 EXISTS = "{name} already exists, statement succeeded."
 DROPPED = "{name} successfully dropped."
 ALTERED = "Statement executed successfully."
 DROP_MISSING = "Drop statement executed successfully ({name} already dropped)."
-ALREADY_EXISTS = "SQL compilation error:\nObject '{fqname}' already exists."
+ALREADY_EXISTS = "SQL compilation error:\nObject '{name}' already exists."
 DOES_NOT_EXIST = "SQL compilation error:\nTask '{fqname}' does not exist or not authorized."
+DATABASE_DOES_NOT_EXIST = "SQL compilation error:\nDatabase '{database}' does not exist or not authorized."
 INVALID_PROPERTY = "SQL compilation error:\ninvalid property '{prop}' for 'TASK'"
+INVALID_ENABLE_ARGUMENT = "SQL compilation error:\ninvalid value [{argument}] for parameter 'RECURSIVE_TASK_ENABLE'"
 
 STARTED_ROOT = "Unable to update graph with root task {root} since that root task is not suspended."
-OTHER_SCHEMA_PREDECESSOR = "SQL compilation error:\nTask {fqname} cannot depend on task {pred} in a different schema."
-SCHEDULED_CHILD = "SQL compilation error:\nTask {fqname} with predecessors or a finalized root cannot have a schedule."
+INVALID_PREDECESSOR = "Invalid predecessor {name} was specified."
+OTHER_SCHEMA_PREDECESSOR = "Cannot have predecessor {name} from a different schema."
+SCHEDULED_CHILD = "Task {name} cannot have both a schedule and a predecessor."
+NOT_A_PREDECESSOR = "Task {name} does not have predecessor {predecessor}."
+CANNOT_RESUME = "Task {fqname} should have a SCHEDULE, AFTER, FINALIZE or WHEN to be resumed."
+NEEDS_TARGET_COMPLETION_INTERVAL = (
+    "TARGET_COMPLETION_INTERVAL must be set for serverless triggered task {fqname} to resume or execute."
+)
+ROOT_HAS_FINALIZER = (
+    "This task has a finalizer and cannot be made a child task. Please remove the finalizer before adding a "
+    "predecessor."
+)
+FINALIZER_HAS_PREDECESSORS = "Task {fqname} cannot have predecessors as a finalizer task."
+FINALIZER_HAS_SCHEDULE = "Task {name} cannot have a schedule and be a finalizer task."
+FINALIZES_NON_ROOT = "Task {fqname} cannot finalize a non-root task {root}."
+INVALID_FINALIZED_ROOT = "Invalid finalized root task {name} was specified."
+FINALIZER_EXISTS = "Finalize target {name} already have finalizer."
+FINALIZE_OTHER_SCHEMA = "Cannot finalize graph {schema}.{name} in a different schema."
+INVALID_CONDITION = (
+    "Invalid expression for task condition expression. Only some data type conversions and the following functions "
+    "are allowed: [SYSTEM$GET_PREDECESSOR_RETURN_VALUE, SYSTEM$PREDECESSORS_STATE, SYSTEM$STREAM_HAS_DATA, "
+    "SYSTEM$TASK_COMPLETION_STATE]. Please see the documentation for more details."
+)
+# provisional, not seen on live Snowflake
 INVALID_FINALIZER = "SQL compilation error:\nInvalid finalizer task {fqname}: {reason}."
-FINALIZER_HAS_PREDECESSORS = "a finalizer cannot have predecessors"
 FINALIZER_HAS_CHILDREN = "a finalizer cannot have child tasks"
-FINALIZER_EXISTS = "root task {root} already has a finalizer"
-FINALIZER_NOT_ROOT = "{root} is not a root task"
-FINALIZER_SELF = "a task cannot finalize itself"
-MIXED_GRAPHS = "SQL compilation error:\nTask {fqname} cannot have predecessors in different task graphs."
-CYCLE = "SQL compilation error:\nTask graph cycle detected involving task {fqname}."
 LIMIT_EXCEEDED = "SQL compilation error:\nTask {fqname} exceeds the maximum of {limit} {what}."
 
 MAX_PREDECESSORS = 100
@@ -100,7 +119,36 @@ _COLUMNS = (
     "created_on, name, id, schema_name, owner, comment, warehouse, schedule, predecessors, state, definition, "
     "condition, finalize, config, error_integration, success_integration, overlap_policy, "
     "allow_overlapping_execution, properties, session_parameters, last_committed_on, last_suspended_on, "
-    "last_suspended_reason"
+    "last_suspended_reason, created_by_user"
+)
+# what a WHEN condition can be made of: constants, comparisons, logic, conversions and these functions
+_CONDITION_NODES = (
+    exp.Literal,
+    exp.Boolean,
+    exp.Null,
+    exp.EQ,
+    exp.NEQ,
+    exp.GT,
+    exp.GTE,
+    exp.LT,
+    exp.LTE,
+    exp.Between,
+    exp.And,
+    exp.Or,
+    exp.Not,
+    exp.Paren,
+    exp.Cast,
+    exp.TryCast,
+    exp.DataType,
+    exp.DataTypeParam,
+)
+_CONDITION_FUNCTIONS = frozenset(
+    {
+        "SYSTEM$GET_PREDECESSOR_RETURN_VALUE",
+        "SYSTEM$PREDECESSORS_STATE",
+        "SYSTEM$STREAM_HAS_DATA",
+        "SYSTEM$TASK_COMPLETION_STATE",
+    }
 )
 
 
@@ -134,6 +182,7 @@ class Task:
     last_committed_on: datetime | None = None
     last_suspended_on: datetime | None = None
     last_suspended_reason: str | None = None
+    created_by_user: str | None = None
 
     @property
     def fqname(self) -> str:
@@ -148,12 +197,14 @@ class TaskCatalog:
         current_schema: str | None,
         role: str,
         command: str,
+        user: str | None = None,
     ) -> None:
         self.duck_conn = duck_conn
         self.current_database = current_database
         self.current_schema = current_schema
         self.role = role
         self.command = command  # the statement being run, eg: CREATE TASK, for errors
+        self.user = user
 
     def resolve(self, name: TaskName) -> tuple[str, str, str]:
         """Qualify a task name with the session's database and schema."""
@@ -203,8 +254,8 @@ class TaskCatalog:
         return None
 
     def graph(self, root: Task, proposed: Task | None = None) -> list[Task]:
-        """The root, its descendants in topological order with ties broken by name, then its finalizer. A proposed
-        task replaces the saved one of the same name."""
+        """The root, its descendants in the order they become ready to run, then its finalizer. A proposed task
+        replaces the saved one of the same name."""
         tasks = self._schema_tasks(root.database, root.schema_name)
         if proposed:
             tasks = [t for t in tasks if t.name != proposed.name] + [proposed]
@@ -224,17 +275,21 @@ class TaskCatalog:
         for t in by_name.values():
             for pred in members.intersection(t.predecessors):
                 children[pred].append(t.name)
-        ready = [root.name]
+        # in waves, as Snowflake runs a task once it's ready: the tasks a wave makes ready run after it, by name
+        wave = [root.name]
         ordered: list[Task] = []
-        while ready:
-            name = heapq.heappop(ready)
-            ordered.append(by_name[name])
-            del waiting[name]
-            for child in children[name]:
-                waiting[child] -= 1
-                if waiting[child] == 0:
-                    heapq.heappush(ready, child)
-        ordered.extend(by_name[name] for name in sorted(waiting))  # a cycle, which the rules prevent
+        while wave:
+            ready: list[str] = []
+            for name in sorted(wave):
+                ordered.append(by_name[name])
+                del waiting[name]
+                # a child already ordered is in a cycle through the root, which the DDL accepts
+                for child in (c for c in children[name] if c in waiting):
+                    waiting[child] -= 1
+                    if waiting[child] == 0:
+                        ready.append(child)
+            wave = ready
+        ordered.extend(by_name[name] for name in sorted(waiting))  # a cycle, which EXECUTE TASK rejects
         finalizer = self.finalizer_of(root)
         if finalizer:
             ordered.append(finalizer)
@@ -244,18 +299,22 @@ class TaskCatalog:
         """Raise if the root of the task's graph, which may be the task itself, is started."""
         root = self.root_of(task)
         if root.state == STARTED:
-            raise _error(STARTED_ROOT.format(root=root.fqname), 91089, "02000")
+            raise _error(STARTED_ROOT.format(root=root.fqname), 91421, "22000")
 
     def create(self, stmt: CreateTask) -> str:
         database, schema, name = self.resolve(stmt.name)
         with self.duck_conn.cursor() as conn:
+            if not conn.execute(
+                "select 1 from information_schema.schemata where upper(catalog_name) = upper(?)", [database]
+            ).fetchone():
+                raise _error(DATABASE_DOES_NOT_EXIST.format(database=database), 2003, "02000")
             check_schema_exists(conn, database, schema)
         task = self._new(database, schema, name, stmt)
         existing = self.get(database, schema, name)
         if existing and not (stmt.replace or stmt.or_alter):
             if stmt.if_not_exists:
                 return status_sql(EXISTS, name)
-            raise _error(ALREADY_EXISTS.format(fqname=existing.fqname), 2002, "42710")
+            raise _error(ALREADY_EXISTS.format(name=existing.name), 2002, "42710")
         if existing and not stmt.replace:
             # altering keeps the identity, state and history, and resets what the statement leaves out
             task = replace(
@@ -272,8 +331,14 @@ class TaskCatalog:
             if not stmt.clone_of
             else [(database, schema, p) for p in task.predecessors]
         )
-        self._store(task, existing, after, replacing=stmt.replace)
-        return status_sql(CREATED, name)
+        # a started root or standalone task can be replaced, or altered, but not a task in a started graph
+        replacing = bool(
+            (stmt.replace or stmt.or_alter)
+            and existing
+            and not (existing.predecessors or existing.finalize or task.predecessors or task.finalize)
+        )
+        self._store(task, existing, after, replacing=replacing)
+        return status_sql(ALTERED if existing and stmt.or_alter else CREATED, name)
 
     def alter(self, stmt: AlterTask) -> str:
         database, schema, name = self.resolve(stmt.name)
@@ -286,7 +351,11 @@ class TaskCatalog:
             # a root can always be resumed or suspended, a child only while its root is suspended
             if self.root_of(task).name != task.name:
                 self.check_root_suspended(task)
-            self.save(_resumed(task) if stmt.action == "RESUME" else _suspended(task, USER_SUSPENDED))
+            if stmt.action == "RESUME":
+                self.save(_resumed(_check_resumable(task)))
+            elif task.state != SUSPENDED:
+                # suspending a suspended task changes nothing
+                self.save(_suspended(task, USER_SUSPENDED))
             return status_sql(ALTERED, name)
 
         new = replace(task, predecessors=list(task.predecessors), properties=dict(task.properties))
@@ -299,8 +368,11 @@ class TaskCatalog:
                     after.append(pred)
                     new.predecessors.append(pred[2])
         elif stmt.action == "REMOVE_AFTER":
-            removed = {r[2] for r in map(self.resolve, stmt.tasks) if r[:2] == (database, schema)}
-            new.predecessors = [p for p in new.predecessors if p not in removed]
+            removed = [self.resolve(r) for r in stmt.tasks]
+            for pred in removed:
+                if pred[:2] != (database, schema) or pred[2] not in task.predecessors:
+                    raise _error(NOT_A_PREDECESSOR.format(name=name, predecessor=pred[2]), 91417, "22000")
+            new.predecessors = [p for p in new.predecessors if p not in {r[2] for r in removed}]
             if task.predecessors and not new.predecessors:
                 new = _suspended(new, CHILD_BECAME_ROOT)
         elif stmt.action == "SET":
@@ -314,7 +386,7 @@ class TaskCatalog:
         elif stmt.action == "MODIFY_AS":
             new.definition = stmt.text
         elif stmt.action == "MODIFY_WHEN":
-            new.condition = stmt.text
+            new.condition = _check_condition(stmt.text)
         elif stmt.action == "REMOVE_WHEN":
             new.condition = None
         if stmt.action != "ADD_AFTER":
@@ -322,13 +394,18 @@ class TaskCatalog:
         self._store(new, task, after)
         return status_sql(ALTERED, name)
 
-    def enable_dependents(self, name: TaskName) -> None:
-        """Resume the task and all its dependents."""
-        task = self.require(name)
+    def enable_dependents(self, name: TaskName, argument: str) -> None:
+        """Resume the task and all its dependents. The dependents are resumed first, so they stay resumed when the
+        task itself can't be."""
+        task = self.get(*self.resolve(name))
+        if task is None:
+            raise _error(INVALID_ENABLE_ARGUMENT.format(argument=argument), 1008, "22023")
         if self.root_of(task).name != task.name:
             self.check_root_suspended(task)
         for member in self.graph(task):
-            self.save(_resumed(member))
+            if member.name != task.name:
+                self.save(_resumed(member))
+        self.save(_resumed(_check_resumable(task)))
 
     def is_standalone(self, task: Task) -> bool:
         """Whether the task has no predecessors, children or finalizer."""
@@ -338,97 +415,48 @@ class TaskCatalog:
         self, task: Task, existing: Task | None, after: list[tuple[str, str, str]], replacing: bool = False
     ) -> None:
         """Check the graph rules and save a new or changed task. A task already in a started graph can't change,
-        nor can one join a started graph, except that a started standalone task can be replaced."""
-        if existing and not (replacing and self.is_standalone(existing)):
+        nor can one join a started graph, except that a started root or standalone task can be replaced."""
+        if existing and not replacing:
             self.check_root_suspended(existing)
-        self._check_graph(task, after)
+        self._check_graph(task, after, replacing)
         self.save(task)
 
-    def _check_graph(self, task: Task, after: list[tuple[str, str, str]]) -> None:
+    def _check_graph(self, task: Task, after: list[tuple[str, str, str]], replacing: bool = False) -> None:
         """Check the rules for a task about to be saved, in the order Snowflake reports them."""
         preds: list[Task] = []
         for pred_db, pred_schema, pred_name in after:
             pred = self.get(pred_db, pred_schema, pred_name)
             if pred is None:
-                raise _error(DOES_NOT_EXIST.format(fqname=f"{pred_db}.{pred_schema}.{pred_name}"), 2003, "02000")
+                raise _error(INVALID_PREDECESSOR.format(name=pred_name), 91085, "42601")
             if (pred.database, pred.schema_name) != (task.database, task.schema_name):
-                raise _error(OTHER_SCHEMA_PREDECESSOR.format(fqname=task.fqname, pred=pred.fqname), 2003, "02000")
+                raise _error(OTHER_SCHEMA_PREDECESSOR.format(name=pred.name), 91413, "42601")
             if pred.finalize:
                 raise _error(INVALID_FINALIZER.format(fqname=pred.fqname, reason=FINALIZER_HAS_CHILDREN), 2003, "02000")
             preds.append(pred)
-        if task.finalize == task.name:
-            raise _error(INVALID_FINALIZER.format(fqname=task.fqname, reason=FINALIZER_SELF), 2003, "02000")
         finalized = self.get(task.database, task.schema_name, task.finalize) if task.finalize else None
-        if task.finalize and finalized is None:
-            raise _error(
-                DOES_NOT_EXIST.format(fqname=f"{task.database}.{task.schema_name}.{task.finalize}"), 2003, "02000"
-            )
-        for member in [*preds, finalized] if finalized else preds or [task]:
+        if task.finalize and (finalized is None or task.finalize == task.name):
+            raise _error(INVALID_FINALIZED_ROOT.format(name=task.finalize), 91471, "42601")
+        # joining a started graph is rejected, as is changing a started task, unless it's replaced or altered
+        for member in [*preds, finalized] if finalized else preds or ([] if replacing else [task]):
             self.check_root_suspended(member)
-        if len({self.root_of(pred).fqname for pred in preds}) > 1:
-            raise _error(MIXED_GRAPHS.format(fqname=task.fqname), 2003, "02000")
-        finalizer = self.finalizer_of(task)
-        if finalizer and (task.predecessors or task.finalize):
-            reason = FINALIZER_NOT_ROOT.format(root=task.fqname)
-            raise _error(INVALID_FINALIZER.format(fqname=finalizer.fqname, reason=reason), 2003, "02000")
-        if (task.predecessors or task.finalize) and task.schedule:
-            raise _error(SCHEDULED_CHILD.format(fqname=task.fqname), 2003, "02000")
+        if task.predecessors and self.finalizer_of(task):
+            raise _error(ROOT_HAS_FINALIZER, 91856, "55000")
+        if task.finalize and task.predecessors:
+            raise _error(FINALIZER_HAS_PREDECESSORS.format(fqname=task.fqname), 91468, "42601")
+        if task.finalize and task.schedule:
+            raise _error(FINALIZER_HAS_SCHEDULE.format(name=task.name), 91470, "42601")
+        if task.predecessors and task.schedule:
+            raise _error(SCHEDULED_CHILD.format(name=task.name), 91400, "42601")
         if finalized:
-            reason = None
             existing_finalizer = self.finalizer_of(finalized)
-            if finalized.predecessors or finalized.finalize:
-                reason = FINALIZER_NOT_ROOT.format(root=finalized.fqname)
-            elif task.predecessors:
-                reason = FINALIZER_HAS_PREDECESSORS
-            elif self.children(task):
-                reason = FINALIZER_HAS_CHILDREN
-            elif existing_finalizer and existing_finalizer.name != task.name:
-                reason = FINALIZER_EXISTS.format(root=finalized.fqname)
-            if reason:
-                raise _error(INVALID_FINALIZER.format(fqname=task.fqname, reason=reason), 2003, "02000")
-        if self._has_cycle(task):
-            raise _error(CYCLE.format(fqname=task.fqname), 2003, "02000")
-        if split := self._split_join(task):
-            raise _error(MIXED_GRAPHS.format(fqname=split.fqname), 2003, "02000")
+            if finalized.predecessors:
+                raise _error(FINALIZES_NON_ROOT.format(fqname=task.fqname, root=finalized.fqname), 91497, "42601")
+            if self.children(task):
+                raise _error(INVALID_FINALIZER.format(fqname=task.fqname, reason=FINALIZER_HAS_CHILDREN), 2003, "02000")
+            if existing_finalizer and existing_finalizer.name != task.name:
+                raise _error(FINALIZER_EXISTS.format(name=finalized.name), 91472, "42601")
+        # predecessors in different graphs, or a cycle, are accepted here, and rejected by EXECUTE TASK
         self._check_limits(task)
-
-    def _has_cycle(self, task: Task) -> bool:
-        tasks = {t.name: t for t in self._schema_tasks(task.database, task.schema_name)}
-        stack = list(task.predecessors)
-        seen: set[str] = set()
-        while stack:
-            name = stack.pop()
-            if name == task.name:
-                return True
-            if name not in seen and name in tasks:
-                seen.add(name)
-                stack.extend(tasks[name].predecessors)
-        return False
-
-    def _split_join(self, task: Task) -> Task | None:
-        """A dependent of the task that would have predecessors in different graphs once the task is saved, eg:
-        after one of its predecessors loses its own."""
-        tasks = {t.name: t for t in self._schema_tasks(task.database, task.schema_name)} | {task.name: task}
-
-        def root(name: str) -> str:
-            seen = {name}
-            while (t := tasks.get(name)) and (parent := t.finalize or next(iter(t.predecessors), None)):
-                if parent in seen:
-                    break
-                seen.add(parent)
-                name = parent
-            return name
-
-        pending, visited = [task.name], {task.name}
-        while pending:
-            name = pending.pop()
-            for child in tasks.values():
-                if name in child.predecessors and child.name not in visited:
-                    if len({root(p) for p in child.predecessors}) > 1:
-                        return child
-                    visited.add(child.name)
-                    pending.append(child.name)
-        return None
 
     def _check_limits(self, task: Task) -> None:
         limits = [(len(task.predecessors), MAX_PREDECESSORS, "predecessors", task)]
@@ -505,6 +533,7 @@ class TaskCatalog:
             task.last_committed_on,
             task.last_suspended_on,
             task.last_suspended_reason,
+            task.created_by_user,
         ]
         with self.duck_conn.cursor() as conn:
             conn.execute(
@@ -534,6 +563,7 @@ class TaskCatalog:
                 id=str(uuid.uuid4()),
                 created_on=now(),
                 owner=self.role,
+                created_by_user=self.user,
                 predecessors=source.predecessors if self.role == source.owner else [],
                 state=SUSPENDED,
                 last_committed_on=None,
@@ -547,8 +577,9 @@ class TaskCatalog:
             name=name,
             created_on=now(),
             owner=self.role,
+            created_by_user=self.user,
             predecessors=[after.name for after in stmt.after],
-            condition=stmt.condition,
+            condition=_check_condition(stmt.condition),
             definition=stmt.definition,
         )
         for prop, value in stmt.properties.items():
@@ -563,8 +594,7 @@ class TaskCatalog:
             elif column == "finalize":
                 database, schema, root = self.resolve(parse_task_name(value))
                 if (database, schema) != (task.database, task.schema_name):
-                    pred = f"{database}.{schema}.{root}"
-                    raise _error(OTHER_SCHEMA_PREDECESSOR.format(fqname=task.fqname, pred=pred), 2003, "02000")
+                    raise _error(FINALIZE_OTHER_SCHEMA.format(schema=schema, name=root), 91479, "42601")
                 task.finalize = root
             else:
                 setattr(task, column, value)
@@ -573,7 +603,7 @@ class TaskCatalog:
         elif prop in SESSION_PARAMETERS and not (prop == "AUTOCOMMIT" and value.upper() == "FALSE"):
             task.session_parameters[prop] = value
         else:
-            raise _error(INVALID_PROPERTY.format(prop=prop), 1008, "22023")
+            raise _error(INVALID_PROPERTY.format(prop=prop.lower()), 1420, "22023")
 
 
 def _unset_property(task: Task, prop: str) -> None:
@@ -584,7 +614,41 @@ def _unset_property(task: Task, prop: str) -> None:
     elif prop in SESSION_PARAMETERS:
         task.session_parameters.pop(prop, None)
     else:
-        raise _error(INVALID_PROPERTY.format(prop=prop), 1008, "22023")
+        raise _error(INVALID_PROPERTY.format(prop=prop.lower()), 1420, "22023")
+
+
+def _check_resumable(task: Task) -> Task:
+    """The task, if something can trigger it once it's resumed."""
+    if not (task.schedule or task.predecessors or task.finalize or task.condition):
+        raise _error(CANNOT_RESUME.format(fqname=task.fqname), 91453, "22000")
+    return check_runnable(task)
+
+
+def check_runnable(task: Task) -> Task:
+    """The task, unless it's a serverless root triggered only by its WHEN, which needs a target completion interval
+    to be resumed or executed."""
+    triggered = task.condition and not (task.schedule or task.predecessors or task.finalize)
+    if triggered and not task.warehouse and "TARGET_COMPLETION_INTERVAL" not in task.properties:
+        raise _error(NEEDS_TARGET_COMPLETION_INTERVAL.format(fqname=task.fqname), 91865, "55000")
+    return task
+
+
+def _check_condition(condition: str | None) -> str | None:
+    """The WHEN condition, if it's made only of what Snowflake allows in one."""
+    if condition is None:
+        return None
+    try:
+        parsed = sqlglot.parse_one(condition, read="snowflake")
+    except ParseError:
+        parsed = None
+    for node in parsed.walk() if parsed else [None]:
+        if isinstance(node, exp.Anonymous) and node.name.upper() in _CONDITION_FUNCTIONS:
+            continue
+        if not isinstance(node, _CONDITION_NODES) and not (
+            isinstance(node, exp.Literal | exp.Identifier) and isinstance(node.parent, exp.Anonymous)
+        ):
+            raise _error(INVALID_CONDITION, 91464, "42601")
+    return condition
 
 
 def _resumed(task: Task) -> Task:
@@ -624,7 +688,7 @@ def status_sql(template: str, name: str) -> str:
 def _task(database: str, row: tuple) -> Task:
     (created_on, name, id_, schema, owner, comment, warehouse, schedule, predecessors, state, definition) = row[:11]
     (condition, finalize, config, error_integration, success_integration, overlap_policy) = row[11:17]
-    (allow_overlap, properties, session_parameters, committed, suspended, reason) = row[17:23]
+    (allow_overlap, properties, session_parameters, committed, suspended, reason, created_by) = row[17:24]
     return Task(
         database=database,
         schema_name=schema,
@@ -650,4 +714,5 @@ def _task(database: str, row: tuple) -> Task:
         last_committed_on=committed,
         last_suspended_on=suspended,
         last_suspended_reason=reason,
+        created_by_user=created_by,
     )

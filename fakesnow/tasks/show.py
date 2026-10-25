@@ -6,16 +6,18 @@ import snowflake.connector.errors
 from duckdb import DuckDBPyConnection
 
 from fakesnow import checks
-from fakesnow.tasks.catalog import Task, tasks_table
+from fakesnow.tasks.catalog import DATABASE_DOES_NOT_EXIST, Task, tasks_table
 from fakesnow.tasks.statements import ShowTasks
+from fakesnow.transforms.temporary import check_schema_exists
 
-# provisional values, to be checked against live Snowflake
 OWNER_ROLE_TYPE = "ROLE"
 OVERLAP_TRUE = "true"  # allow_overlapping_execution is rendered as text
 OVERLAP_FALSE = "false"
+UNSET = "null"  # how an unset integration, or a child's allow_overlapping_execution, is rendered
+NO_OVERLAP = "NO_OVERLAP"  # a root's overlap_policy, unless set or allow_overlapping_execution is true
+ALLOW_CHILD_OVERLAP = "ALLOW_CHILD_OVERLAP"
 SCHEDULING_MODE = "NULL"  # SQL for the scheduling_mode value
 EXECUTE_AS_USER = "NULL"  # SQL for the execute_as_user value
-DATABASE_DOES_NOT_EXIST = "SQL compilation error:\nDatabase '{database}' does not exist or not authorized."
 
 _TERSE_COLUMNS = "created_on, name, NULL::VARCHAR AS kind, database_name, schema_name, schedule"
 
@@ -28,7 +30,13 @@ def rows_sql(database: str) -> str:
     """The SHOW TASKS columns of every task in a database."""
     table = tasks_table(database)
     qualified = f"{_literal(database + '.')} || t.schema_name || '.' ||"
+    # compact in task_relations, and one name per line in predecessors
     predecessors = f"to_json(list_transform(t.predecessors, p -> {qualified} p))"
+    listed = (
+        "CASE WHEN cardinality(t.predecessors) = 0 THEN '[]' "
+        f"ELSE '[' || chr(10) || array_to_string(list_transform(t.predecessors, p -> '  ' || to_json({qualified} p)), "
+        "',' || chr(10)) || chr(10) || ']' END"
+    )
     relations = (
         f"(select {qualified} min(f.name) from {table} f where f.schema_name = t.schema_name and f.finalize = t.name)"
     )
@@ -42,36 +50,41 @@ def rows_sql(database: str) -> str:
         {_literal(database)} as database_name,
         t.schema_name,
         t.owner,
-        t.comment,
+        coalesce(t.comment, '') as comment,
         t.warehouse,
         t.schedule,
-        {SCHEDULING_MODE}::VARCHAR as scheduling_mode,
-        t.properties->>'$.TARGET_COMPLETION_INTERVAL' as target_completion_interval,
-        {predecessors}::VARCHAR as predecessors,
+        {listed} as predecessors,
         t.state,
         t.definition,
         t.condition,
-        CASE WHEN {is_child} THEN NULL
-             ELSE CASE WHEN coalesce(t.allow_overlapping_execution, false)
-                       THEN '{OVERLAP_TRUE}' ELSE '{OVERLAP_FALSE}' END
+        CASE WHEN {is_child} THEN '{UNSET}'
+             WHEN coalesce(t.allow_overlapping_execution, false) THEN '{OVERLAP_TRUE}' ELSE '{OVERLAP_FALSE}'
         END as allow_overlapping_execution,
-        t.error_integration,
-        t.success_integration,
+        coalesce(t.error_integration, '{UNSET}') as error_integration,
         t.last_committed_on,
         t.last_suspended_on,
         '{OWNER_ROLE_TYPE}' as owner_role_type,
         CASE WHEN {is_child} THEN NULL ELSE t.config END as config,
+        CASE
+            WHEN t.finalize is not null and {relations} is not null
+                THEN json_object('FinalizedRootTask', {finalized}, 'Predecessors', {predecessors},
+                                 'FinalizerTask', {relations})
+            WHEN t.finalize is not null
+                THEN json_object('FinalizedRootTask', {finalized}, 'Predecessors', {predecessors})
+            WHEN {relations} is not null
+                THEN json_object('Predecessors', {predecessors}, 'FinalizerTask', {relations})
+            ELSE json_object('Predecessors', {predecessors})
+        END::VARCHAR as task_relations,
         t.last_suspended_reason,
-        json_merge_patch(
-            json_object('Predecessors', {predecessors}),
-            CASE
-                WHEN t.finalize is not null THEN json_object('FinalizedRootTask', {finalized})
-                WHEN {relations} is not null THEN json_object('FinalizerTask', {relations})
-                ELSE '{{}}'::JSON
-            END
-        )::VARCHAR as task_relations,
+        coalesce(t.success_integration, '{UNSET}') as success_integration,
+        {SCHEDULING_MODE}::VARCHAR as scheduling_mode,
+        t.properties->>'$.TARGET_COMPLETION_INTERVAL' as target_completion_interval,
         {EXECUTE_AS_USER}::VARCHAR as execute_as_user,
-        CASE WHEN {is_child} THEN NULL ELSE t.overlap_policy END as overlap_policy
+        CASE WHEN {is_child} THEN NULL
+             ELSE coalesce(t.overlap_policy,
+                           CASE WHEN t.allow_overlapping_execution THEN '{ALLOW_CHILD_OVERLAP}' ELSE '{NO_OVERLAP}' END)
+        END as overlap_policy,
+        t.created_by_user
     from {table} t"""
 
 
@@ -87,7 +100,8 @@ def show_tasks_sql(
     """The SELECT that produces the rows of a SHOW [TERSE] TASKS statement."""
     database: str | None = None
     schema: str | None = None
-    scope = stmt.scope or ("DATABASE" if current_database else "ACCOUNT")
+    # without IN, the current schema, as IN SCHEMA without a name
+    scope = stmt.scope or "SCHEMA"
     parts = stmt.scope_name or []
     if scope == "SCHEMA" and parts:
         schema = parts[-1]
@@ -117,6 +131,9 @@ def show_tasks_sql(
             errno=2003,
             sqlstate="02000",
         )
+    if schema:
+        with duck_conn.cursor() as conn:
+            check_schema_exists(conn, database, schema)
 
     filters = []
     if schema:
@@ -126,10 +143,11 @@ def show_tasks_sql(
     if stmt.starts_with is not None:
         filters.append(f"starts_with(name, {_literal(stmt.starts_with)})")
     if stmt.root_only:
-        filters.append("predecessors = '[]'")
+        # a finalizer has no predecessors, but isn't a root
+        filters.append("predecessors = '[]' and task_relations not like '%\"FinalizedRootTask\"%'")
     if stmt.limit_from is not None:
-        # the rows following the name, so a client can page on from the last name it saw
-        filters.append(f"name > {_literal(stmt.limit_from)}")
+        # the rows from the name on
+        filters.append(f"name >= {_literal(stmt.limit_from)}")
 
     rows = " union all ".join(rows_sql(d) for d in databases)
     where = f" where {' and '.join(filters)}" if filters else ""

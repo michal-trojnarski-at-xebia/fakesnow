@@ -8,7 +8,7 @@ from typing import Any
 import duckdb
 
 import fakesnow.fakes as fakes
-from fakesnow import info_schema, tasks
+from fakesnow import info_schema
 from fakesnow.owners import Owners
 from fakesnow.transforms import show
 
@@ -46,8 +46,6 @@ class FakeSnow:
 
         # use UTC instead of local time zone for consistent testing
         self.duck_conn.execute("SET GLOBAL TimeZone = 'UTC'")
-        # the function the SET_RETURN_VALUE calls of task runs are replaced by
-        tasks.register_capture(self.duck_conn)
 
     def connect(
         self,

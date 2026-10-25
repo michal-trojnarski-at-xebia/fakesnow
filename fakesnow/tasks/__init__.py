@@ -10,7 +10,7 @@ from duckdb import DuckDBPyConnection
 from sqlglot import Expr, exp
 
 from fakesnow.tasks.catalog import TaskCatalog, status_sql
-from fakesnow.tasks.functions import register_capture, store_return_value, task_functions
+from fakesnow.tasks.functions import task_functions
 from fakesnow.tasks.history import task_table_functions
 from fakesnow.tasks.runner import EXECUTED, run_graph
 from fakesnow.tasks.show import describe_task_sql, show_tasks_sql
@@ -23,6 +23,7 @@ from fakesnow.tasks.statements import (
     ExecuteTask,
     ShowTasks,
     TaskStatement,
+    TaskSyntaxError,
     parse_task_name,
     parse_task_statement,
 )
@@ -45,14 +46,32 @@ _ENABLE_DEPENDENTS = "SYSTEM$TASK_DEPENDENTS_ENABLE"
 
 
 __all__ = [
+    "commits_transaction",
     "drop_schema",
     "execute",
-    "register_capture",
-    "store_return_value",
+    "keeps_variables",
     "task_functions",
     "task_statement",
     "task_table_functions",
 ]
+
+
+def commits_transaction(expression: Expr) -> bool:
+    """Whether the task statement commits the session's active transaction: ALTER and DROP TASK do, CREATE and
+    EXECUTE TASK don't."""
+    return isinstance(expression.args.get("task_statement"), AlterTask | DropTask)
+
+
+def keeps_variables(sql: str) -> bool:
+    """Whether the statement defines a task body or condition, which keeps its session variables as written, to be
+    resolved when the task runs."""
+    try:
+        statement = parse_task_statement(sql)
+    except TaskSyntaxError:
+        return False
+    if isinstance(statement, CreateTask):
+        return True
+    return isinstance(statement, AlterTask) and statement.action in ("MODIFY_AS", "MODIFY_WHEN")
 
 
 def task_statement(expression: Expr) -> Expr:
@@ -92,6 +111,7 @@ def execute(statement: TaskStatement, conn: FakeSnowflakeConnection) -> str:
         conn.schema if conn.schema_set else None,
         conn.role,
         _COMMANDS[type(statement)],
+        conn.user,
     )
     if isinstance(statement, CreateTask):
         return catalog.create(statement)
@@ -100,9 +120,10 @@ def execute(statement: TaskStatement, conn: FakeSnowflakeConnection) -> str:
     if isinstance(statement, DropTask):
         return catalog.drop(statement)
     if isinstance(statement, EnableDependents):
-        catalog.enable_dependents(statement.name)
-        column = f"{_ENABLE_DEPENDENTS}('{statement.argument}')".replace('"', '""')
-        return f'SELECT NULL AS "{column}"'
+        catalog.enable_dependents(statement.name, statement.argument)
+        # named as Snowflake names the column of the call
+        column = f"{_ENABLE_DEPENDENTS}('{statement.argument}')".upper().replace('"', '""')
+        return f"SELECT 'OK' AS \"{column}\""
     if isinstance(statement, ExecuteTask):
         root = catalog.require(statement.name)
         run_graph(conn, catalog, root, statement.config)

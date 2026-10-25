@@ -63,6 +63,8 @@ class FakeSnowflakeConnection:
         self.warehouse: str | None = (w := kwargs.get("warehouse")) and normalise_ident(w)
         # as the connector's, eg: for SYSTEM$CANCEL_ALL_QUERIES(<session id>)
         self.session_id: int = secrets.randbelow(10**10)
+        # recorded as the user who created or ran a task
+        self.user: str | None = (u := kwargs.get("user")) and normalise_ident(u)
 
         self.database_set = False
         self.schema_set = False
@@ -208,6 +210,7 @@ class FakeSnowflakeConnection:
         # as given, not normalised again, so a quoted name keeps its case
         session.database, session._schema, session.role = database, schema, role  # noqa: SLF001
         session.warehouse = warehouse
+        session.user = self.user
         return session
 
     def rollback(self) -> None:

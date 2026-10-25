@@ -10,24 +10,34 @@ from typing import TYPE_CHECKING, Any
 import snowflake.connector.errors
 from duckdb import DuckDBPyConnection
 
-from fakesnow.tasks.catalog import SUSPENDED, Task, TaskCatalog, graph_runs_table, history_table, now
+from fakesnow.tasks.catalog import (
+    SUSPENDED,
+    Task,
+    TaskCatalog,
+    check_runnable,
+    graph_runs_table,
+    history_table,
+    now,
+)
 from fakesnow.tasks.functions import TaskRunContext
 
 if TYPE_CHECKING:
     from fakesnow.conn import FakeSnowflakeConnection
 
-# provisional messages, to be checked against live Snowflake
 EXECUTED = "Task {name} is scheduled to run immediately."
-NOT_ROOT = "SQL compilation error:\nCannot execute task {fqname}: EXECUTE TASK can only run a standalone or root task."
+NOT_ROOT = (
+    "Execute task cannot be called on non-root task {fqname}. Call EXECUTE TASK on the root task of its graph instead."
+)
+UNREACHABLE = "Unreachable task {fqname} found. The graph has more than one root task (one without predecessors)."
 
-SCHEDULED_FROM = "EXECUTE_TASK"
+SCHEDULED_FROM = "EXECUTE TASK"
 ATTEMPT_NUMBER = 1
 
 SUCCEEDED = "SUCCEEDED"
 FAILED = "FAILED"
 SKIPPED = "SKIPPED"
 _NOT_RUN = "NOT_RUN"  # a predecessor failed or was skipped, so there is no history row
-_SUSPENDED = "SUSPENDED"  # a suspended child, which has no history row either
+_SUSPENDED = "SUSPENDED"  # a suspended child, which has no history row either, and its dependents ignore
 
 
 def run_graph(conn: FakeSnowflakeConnection, catalog: TaskCatalog, root: Task, config_override: str | None) -> None:
@@ -35,13 +45,21 @@ def run_graph(conn: FakeSnowflakeConnection, catalog: TaskCatalog, root: Task, c
     task doesn't raise, its failure is recorded in the task history."""
     if catalog.root_of(root).name != root.name:
         raise snowflake.connector.errors.ProgrammingError(
-            msg=NOT_ROOT.format(fqname=root.fqname), errno=2003, sqlstate="02000"
+            msg=NOT_ROOT.format(fqname=root.fqname), errno=91435, sqlstate="22000"
         )
-    # commit the caller's transaction, explicit or implicit, so the task sessions see its writes and a later
-    # rollback by the caller can't undo the run. without an active transaction this is a no-op.
-    conn._duck_conn.commit()  # noqa: SLF001
-    conn._in_transaction = False  # noqa: SLF001
-    _GraphRun(conn, catalog, root, _merged_config(root.config, config_override)).run()
+    check_runnable(root)
+    graph = catalog.graph(root)
+    members = {t.name for t in graph}
+    for task in graph:
+        # a task with a predecessor outside the graph, eg: after REMOVE AFTER split a join, makes it unrunnable
+        if unreachable := next((p for p in task.predecessors if p not in members), None):
+            fqname = f"{root.database}.{root.schema_name}.{unreachable}"
+            raise snowflake.connector.errors.ProgrammingError(
+                msg=UNREACHABLE.format(fqname=fqname), errno=91419, sqlstate="22000"
+            )
+    # the run doesn't commit the caller's transaction, nor see its uncommitted writes, as it runs in sessions of its
+    # own
+    _GraphRun(conn, catalog, root, _merged_config(root.config, config_override)).run(graph)
 
 
 def _merged_config(default: str | None, override: str | None) -> str | None:
@@ -50,7 +68,7 @@ def _merged_config(default: str | None, override: str | None) -> str | None:
     if default is None or override is None:
         return default if override is None else override
     try:
-        return json.dumps(_merge(json.loads(default), json.loads(override)))
+        return json.dumps(_merge(json.loads(default), json.loads(override)), separators=(",", ":"))
     except ValueError:
         return override
 
@@ -75,8 +93,8 @@ class _GraphRun:
         self.root_query_start_time: datetime | None = None
         self.first_error: tuple[str, int, str] | None = None
 
-    def run(self) -> None:
-        self.graph = self.catalog.graph(self.root)
+    def run(self, graph: list[Task]) -> None:
+        self.graph = graph
         for task in self.graph:
             if task.finalize:
                 # the finalizer comes last, and runs whatever happened to the rest unless the root was skipped
@@ -84,30 +102,23 @@ class _GraphRun:
                     self._run_task(task)
             elif task.name == self.root.name:
                 self._run_task(task)
-            elif self.states[self.root.name] != SUCCEEDED:
-                # a root that failed or was skipped runs none of the graph, but its finalizer
-                self.states[task.name] = _NOT_RUN
             elif task.state == SUSPENDED:
-                # a suspended child is skipped without a history row, whatever happened to its predecessors, and its
-                # dependents run as if it succeeded
+                # a suspended child is skipped without a history row
                 self.states[task.name] = _SUSPENDED
-            elif any(self._state_of(task, p) not in (SUCCEEDED, _SUSPENDED) for p in task.predecessors):
-                self.states[task.name] = _NOT_RUN
-            elif len(task.predecessors) > 1 and all(self._state_of(task, p) == _SUSPENDED for p in task.predecessors):
-                # a task with several predecessors needs at least one of them resumed
-                self.states[task.name] = _NOT_RUN
             else:
-                self._run_task(task)
+                # a task runs once all its resumed predecessors succeeded, and needs at least one of them: the
+                # suspended ones are ignored, so a task after only suspended ones doesn't run
+                resumed = [p for p in task.predecessors if self._state_of(p) != _SUSPENDED]
+                if resumed and all(self._state_of(p) == SUCCEEDED for p in resumed):
+                    self._run_task(task)
+                else:
+                    self.states[task.name] = _NOT_RUN
         self._record_graph_run()
         self.catalog.mark_committed(self.root)
 
-    def _state_of(self, task: Task, predecessor: str) -> str:
-        """A predecessor's state in this run. One outside the graph, eg: a former sibling that became a root when
-        their predecessor was dropped, hasn't run in it, unless it's suspended."""
-        if predecessor in self.states:
-            return self.states[predecessor]
-        other = self.catalog.get(task.database, task.schema_name, predecessor)
-        return _SUSPENDED if other is None or other.state == SUSPENDED else _NOT_RUN
+    def _state_of(self, predecessor: str) -> str:
+        """A predecessor's state in this run, which hasn't run if it's in a cycle."""
+        return self.states.get(predecessor, _NOT_RUN)
 
     def _ancestors(self, task: Task) -> set[str]:
         tasks = {t.name: t for t in self.graph}
@@ -130,10 +141,10 @@ class _GraphRun:
             config=self.config,
             # the enabled predecessors', a suspended one has none
             predecessor_return_values={
-                p: self.return_values.get(p) for p in task.predecessors if self._state_of(task, p) != _SUSPENDED
+                p: self.return_values.get(p) for p in task.predecessors if self._state_of(p) != _SUSPENDED
             },
             ancestor_return_values={
-                a: self.return_values.get(a) for a in self._ancestors(task) if self._state_of(task, a) != _SUSPENDED
+                a: self.return_values.get(a) for a in self._ancestors(task) if self._state_of(a) != _SUSPENDED
             },
         )
         session = self.conn.open_session(
@@ -151,7 +162,8 @@ class _GraphRun:
                 query_id = cur.execute(task.definition).sfqid
                 state = SUCCEEDED
         except snowflake.connector.errors.ProgrammingError as e:
-            state, error_code, error_message = FAILED, e.errno, e.msg
+            # the message without the code and sqlstate the connector prefixes it with
+            state, error_code, error_message = FAILED, e.errno, e.raw_msg
         except Exception as e:
             state, error_code, error_message = FAILED, 0, str(e)
         finally:
@@ -188,6 +200,7 @@ class _GraphRun:
                 "attempt_number": ATTEMPT_NUMBER,
                 "config": self.config,
                 "graph_run_group_id": self.graph_run_group_id,
+                "scheduled_by_user": self.conn.user,
             },
         )
 
@@ -217,6 +230,7 @@ class _GraphRun:
                 "attempt_number": ATTEMPT_NUMBER,
                 "config": self.config,
                 "graph_run_group_id": self.graph_run_group_id,
+                "scheduled_by_user": self.conn.user,
             },
         )
 

@@ -1992,13 +1992,23 @@ def test_predecessor_return_value_quoted_name(cur: snowflake.connector.cursor.Sn
     assert cur.fetchall() == [("quoted",)]
 
 
-def test_predecessor_return_value_name_is_case_sensitive(cur: snowflake.connector.cursor.SnowflakeCursor):
+def _unmatched_predecessor_lookup(cur: snowflake.connector.cursor.SnowflakeCursor) -> None:
     _create_root_returning_value(cur)
+    # task names are case-sensitive, so 'root' doesn't match ROOT
     cur.execute("create task child after root as insert into seen select system$get_predecessor_return_value('root')")
     cur.execute("select system$task_dependents_enable('root')")
     cur.execute("execute task root")
-    cur.execute("select v from seen")
-    assert cur.fetchall() == [(None,)]
+
+
+def test_predecessor_return_value_unmatched_name_fails(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _unmatched_predecessor_lookup(cur)
+    assert _history(cur, "state", "child") == [("FAILED",)]
+
+
+def test_predecessor_return_value_unmatched_name_writes_nothing(cur: snowflake.connector.cursor.SnowflakeCursor):
+    _unmatched_predecessor_lookup(cur)
+    cur.execute("select count(*) from seen")
+    assert cur.fetchall() == [(0,)]
 
 
 def test_predecessor_return_value_without_argument_and_one_enabled_predecessor(

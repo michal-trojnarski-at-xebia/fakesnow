@@ -59,6 +59,8 @@ _TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%f%z"  # rendered in UTC
 _AMBIGUOUS_PREDECESSOR = (
     "SYSTEM$GET_PREDECESSOR_RETURN_VALUE needs a task name when the task has several enabled predecessors"
 )
+_UNMATCHED_PREDECESSOR = "SYSTEM$GET_PREDECESSOR_RETURN_VALUE: '{name}' is not an enabled predecessor of the task"
+_PREDECESSOR_ERRNO = 100357
 
 
 def task_functions(expression: Expr, context: TaskRunContext | None) -> Expr:
@@ -123,11 +125,19 @@ def _read(function: str, args: list[Expr], context: TaskRunContext) -> str | Non
     values = context.predecessor_return_values
     if arg is None and len(values) > 1:
         # the name is required with several, so the call fails
-        raise snowflake.connector.errors.ProgrammingError(msg=_AMBIGUOUS_PREDECESSOR, errno=100357, sqlstate="P0000")
+        raise _predecessor_error(_AMBIGUOUS_PREDECESSOR)
     if arg is None:
         return next(iter(values.values()), None)
-    # matched as given, as task names are case-sensitive here
-    return values[arg] if arg in values else context.ancestor_return_values.get(arg)
+    # matched as given, as task names are case-sensitive here, falling back to a matching ancestor
+    if arg in values:
+        return values[arg]
+    if arg in context.ancestor_return_values:
+        return context.ancestor_return_values[arg]
+    raise _predecessor_error(_UNMATCHED_PREDECESSOR.format(name=arg))
+
+
+def _predecessor_error(message: str) -> snowflake.connector.errors.ProgrammingError:
+    return snowflake.connector.errors.ProgrammingError(msg=message, errno=_PREDECESSOR_ERRNO, sqlstate="P0000")
 
 
 def _runtime_info(field: str | None, context: TaskRunContext) -> str | None:

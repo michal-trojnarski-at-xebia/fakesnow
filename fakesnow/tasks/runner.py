@@ -84,6 +84,9 @@ class _GraphRun:
                     self._run_task(task)
             elif task.name == self.root.name:
                 self._run_task(task)
+            elif self.states[self.root.name] != SUCCEEDED:
+                # a root that failed or was skipped runs none of the graph, but its finalizer
+                self.states[task.name] = _NOT_RUN
             elif task.state == SUSPENDED:
                 # a suspended child is skipped without a history row, whatever happened to its predecessors, and its
                 # dependents run as if it succeeded

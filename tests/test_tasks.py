@@ -1429,6 +1429,17 @@ def test_execute_task_join_ignores_suspended_predecessor_after_failure(
     assert _log(cur) == ["root", "d"]
 
 
+def test_execute_task_skipped_root_skips_dependent_of_suspended_child(
+    cur: snowflake.connector.cursor.SnowflakeCursor, log: None
+):
+    _logging_task(cur, "root", "when 1 = 2")
+    _logging_task(cur, "a", "after root")
+    _logging_task(cur, "b", "after a")
+    cur.execute("alter task b resume")
+    cur.execute("execute task root")
+    assert _log(cur) == []
+
+
 def test_execute_task_join_with_one_predecessor_resumed_runs(
     cur: snowflake.connector.cursor.SnowflakeCursor, log: None
 ):
@@ -1841,6 +1852,21 @@ def test_set_return_value_in_scalar_subquery(cur: snowflake.connector.cursor.Sno
     cur.execute("create task t1 as select (select system$set_return_value(v) from input_table limit 1)")
     cur.execute("execute task t1")
     assert _history(cur, "return_value") == [("x",)]
+
+
+def test_set_return_value_in_insert(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table seen (v varchar)")
+    cur.execute("create task t1 as insert into seen select system$set_return_value('done')")
+    cur.execute("execute task t1")
+    assert _history(cur, "return_value") == [("done",)]
+
+
+def test_set_return_value_in_insert_inserts_value(cur: snowflake.connector.cursor.SnowflakeCursor):
+    cur.execute("create table seen (v varchar)")
+    cur.execute("create task t1 as insert into seen select system$set_return_value('done')")
+    cur.execute("execute task t1")
+    cur.execute("select v from seen")
+    assert cur.fetchall() == [("done",)]
 
 
 def test_set_return_value_stringifies_result(cur: snowflake.connector.cursor.SnowflakeCursor):

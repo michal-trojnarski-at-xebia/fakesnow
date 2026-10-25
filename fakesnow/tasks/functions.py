@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
+import weakref
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from duckdb.func import SPECIAL
 from sqlglot import Expr, exp
 
 from fakesnow.tasks.catalog import Task
 
 if TYPE_CHECKING:
-    import pyarrow as pa
+    from duckdb import DuckDBPyConnection
 
 
 @dataclass
@@ -29,6 +32,9 @@ class TaskRunContext:
     # every ancestor's, as a named lookup falls back to a matching ancestor
     ancestor_return_values: dict[str, str | None] = field(default_factory=dict)
     return_value: str | None = None
+    # the values given to SET_RETURN_VALUE by the statement running, and the key its calls find them by
+    set_values: list[str | None] = field(default_factory=list)
+    key: str = field(default_factory=lambda: uuid.uuid4().hex)
 
 
 _PREFIX = "SYSTEM$"
@@ -42,8 +48,10 @@ _FUNCTIONS = {
 }
 _NULL = exp.Null()
 _PATH_STEP = re.compile(r"""\[(\d+)\]|\.?"((?:[^"]|"")*)"|\.?([^.\["]+)|\['((?:[^']|'')*)'\]""")
-# the column a top-level SELECT gets for the value given to SET_RETURN_VALUE, removed from its result
-_RETURN_VALUE_COLUMN = "_fs_return_value"
+# the function a SET_RETURN_VALUE call is replaced by, which records the value it's given for the task run
+_CAPTURE = "_fs_capture_return_value"
+# the task runs whose SET_RETURN_VALUE calls are being recorded, by key
+_RUNS: weakref.WeakValueDictionary[str, TaskRunContext] = weakref.WeakValueDictionary()
 
 # provisional formats, to be checked against live Snowflake (see "Live checks" in the plan)
 _TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%f%z"  # rendered in UTC
@@ -52,21 +60,6 @@ _TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%f%z"  # rendered in UTC
 def task_functions(expression: Expr, context: TaskRunContext | None) -> Expr:
     """Replace the SYSTEM$ functions that read, or set, the state of the task run the statement is part of. Outside
     a task run they return NULL."""
-    if context and isinstance(expression, exp.Select) and expression.parent is None:
-        call = next(
-            (
-                c
-                for c in expression.find_all(exp.Anonymous)
-                if _name(c) == SET_RETURN_VALUE and c.find_ancestor(exp.Select) is expression
-            ),
-            None,
-        )
-        if call and call.expressions:
-            # a column of its own, so the value is captured wherever the call is in the projection. a call in a
-            # subquery is out of the statement's scope, and leaves its value in the first column.
-            value = exp.alias_(call.expressions[0].copy(), _RETURN_VALUE_COLUMN, quoted=True)
-            expression.select(value, copy=False)
-        return expression
     if not isinstance(expression, exp.Anonymous):
         return expression
     name = _name(expression)
@@ -75,23 +68,40 @@ def task_functions(expression: Expr, context: TaskRunContext | None) -> Expr:
     args = expression.expressions
     if name == SET_RETURN_VALUE:
         expression.root().set("set_return_value", True)
-        # outside a task run there is nothing to set
+        if not context or not args:
+            # outside a task run there is nothing to set
+            return _NULL.copy()
         # a replacement isn't descended into by the transform, so replace the task functions nested in the value
-        return args[0].copy().transform(lambda e: task_functions(e, context)) if context and args else _NULL.copy()
+        value = args[0].copy().transform(lambda e: task_functions(e, context))
+        _RUNS[context.key] = context
+        # the value, once it's recorded, wherever the call is in the statement, eg: in the SELECT of an INSERT
+        capture = exp.Anonymous(
+            this=_CAPTURE,
+            expressions=[exp.Literal.string(context.key), exp.cast(value.copy(), exp.DataType.Type.VARCHAR)],
+        )
+        return exp.Case(ifs=[exp.If(this=capture, true=value)])
     value = _read(name[len(_PREFIX) :], args, context) if context else None
     return _NULL.copy() if value is None else exp.Literal.string(value)
 
 
-def store_return_value(context: TaskRunContext | None, result: pa.Table) -> pa.Table:
-    """Set the return value of the task run from the first row of the SET_RETURN_VALUE result, returning the result
-    without the column added for it. Without that column, eg: in an INSERT, the first column is used."""
-    if context is None:
-        return result
-    index = result.schema.get_field_index(_RETURN_VALUE_COLUMN)
-    if result.num_rows:
-        value = result.column(max(index, 0))[0].as_py()
-        context.return_value = None if value is None else str(value)
-    return result.remove_column(index) if index >= 0 else result
+def register_capture(duck_conn: DuckDBPyConnection) -> None:
+    """Register the function SET_RETURN_VALUE calls are replaced by, in a new instance."""
+    duck_conn.create_function(
+        _CAPTURE, _capture, ["VARCHAR", "VARCHAR"], "BOOLEAN", null_handling=SPECIAL, side_effects=True
+    )
+
+
+def _capture(key: str, value: str | None) -> bool:
+    if context := _RUNS.get(key):
+        context.set_values.append(value)
+    return True
+
+
+def store_return_value(context: TaskRunContext | None) -> None:
+    """Set the return value of the task run from the first value the statement gave SET_RETURN_VALUE."""
+    if context and context.set_values:
+        context.return_value = context.set_values[0]
+        context.set_values.clear()
 
 
 def _name(call: exp.Anonymous) -> str:

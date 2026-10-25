@@ -784,7 +784,7 @@ class FakeSnowflakeCursor:
             affected_count = int(sum(c[0].as_py() for c in self._arrow_table.columns))
         self._rowcount = affected_count if affected_count is not None else self._arrow_table.num_rows
         if transformed.args.get("set_return_value"):
-            self._arrow_table = tasks.store_return_value(self._conn.task_context, self._arrow_table)
+            tasks.store_return_value(self._conn.task_context)
         self._sfqid = str(uuid.uuid4())
 
         self._last_sql = result_sql or sql

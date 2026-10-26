@@ -29,6 +29,7 @@ import fakesnow.macros as macros
 import fakesnow.tasks as tasks
 import fakesnow.transforms as transforms
 from fakesnow import logger
+from fakesnow.arrow import fit_integers, is_integer_decimal
 from fakesnow.copy_into import copy_into
 from fakesnow.dialect import parse_one, syntax_error
 from fakesnow.params import MutableParams
@@ -778,8 +779,9 @@ class FakeSnowflakeCursor:
             logger.log_sql(result_sql)
             self._duck_conn.execute(result_sql)
 
-        self._arrow_table = self._duck_conn.to_arrow_table()
-        assert self._arrow_table is not None
+        arrow_table = self._duck_conn.to_arrow_table()
+        assert arrow_table is not None
+        self._arrow_table = fit_integers(arrow_table)
         if transformed.args.get("merge_counts"):
             # a merge returns a count per operation, but snowflake reports their total as the
             # rows affected, not the single row those counts are in
@@ -879,6 +881,12 @@ class FakeSnowflakeCursor:
             # mimic snowflake python connector error type
             raise TypeError("No open result set")
         tslice = self._arrow_table.slice(offset=self._arrow_table_fetch_index or 0, length=size).to_pylist()
+        if wide := [f.name for f in self._arrow_table.schema if is_integer_decimal(f.type)]:
+            # a NUMBER(p,0) beyond int64 is still an int, as the connector returns it
+            for row in tslice:
+                for name in wide:
+                    if row[name] is not None:
+                        row[name] = int(row[name])
 
         if self._arrow_table_fetch_index is None:
             self._arrow_table_fetch_index = size

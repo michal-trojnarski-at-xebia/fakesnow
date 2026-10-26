@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+
 import pyarrow as pa
 import pyarrow.compute as pc
 
@@ -57,6 +59,24 @@ def to_ipc(table: pa.Table) -> pa.Buffer:
         writer.write_batch(batch)
 
     return sink.getvalue()
+
+
+def is_integer_decimal(t: pa.DataType) -> bool:
+    return pa.types.is_decimal(t) and t.scale == 0
+
+
+def fit_integers(table: pa.Table) -> pa.Table:
+    """Cast each NUMBER(p,0) column whose values fit to int64, as Snowflake sends it.
+
+    duckdb returns NUMBER(38,0) (a hugeint) and NUMBER(p,0) as decimal128(p,0); Snowflake sends a column as the
+    smallest integer that holds its values, so it fetches as int and dataframes have a dtype of int64. A column with
+    a value beyond int64 stays decimal128.
+    """
+    for i, field in enumerate(table.schema):
+        if is_integer_decimal(field.type):
+            with contextlib.suppress(pa.ArrowInvalid):
+                table = table.set_column(i, field.with_type(pa.int64()), table.column(i).cast(pa.int64()))
+    return table
 
 
 def to_sf(table: pa.Table, rowtype: list[ColumnInfo]) -> pa.Table:

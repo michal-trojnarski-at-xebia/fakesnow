@@ -108,6 +108,28 @@ def test_server_null_timestamps(scur: snowflake.connector.cursor.SnowflakeCursor
     assert scur.fetchall() == [(None, None, None), (datetime.datetime(2026, 1, 1, 10), None, None)]
 
 
+def test_server_number_38_0_holds_38_digits(scur: snowflake.connector.cursor.SnowflakeCursor) -> None:
+    # snowflake's integer types are all NUMBER(38,0)
+    scur.execute("create or replace table example (n number(38,0), i int, b bigint)")
+    big = 12345678901234567890123456789012345678
+    scur.execute(f"insert into example values ({big}, -{big}, {big}), (1, 2, 3)")
+
+    scur.execute("select * from example order by i")
+    assert scur.fetchall() == [(big, -big, big), (1, 2, 3)]
+    scur.execute("select n + 1, i * 1 from example where n = 1")
+    assert scur.fetchall() == [(2, 2)]
+    scur.execute("select sum(n), count(*) from example where n = 1")
+    assert scur.fetchall() == [(1, 1)]
+
+
+def test_server_number_38_0_fetches_as_int64_when_it_fits(scur: snowflake.connector.cursor.SnowflakeCursor) -> None:
+    scur.execute("create or replace table example (n number(38,0))")
+    scur.execute("insert into example values (1), (9223372036854775807)")
+
+    scur.execute("select n from example")
+    assert str(scur.fetch_pandas_all()["N"].dtype) == "int64"
+
+
 def test_server_binding_named(server: dict) -> None:
     with snowflake.connector.connect(**server, database="DB1", schema="SCHEMA1") as conn:
         with conn.cursor() as cur:

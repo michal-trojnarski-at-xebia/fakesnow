@@ -21,6 +21,7 @@ from snowflake.connector.cursor import ResultMetadata
 from snowflake.connector.result_batch import ResultBatch
 from sqlglot import Expr, exp
 from sqlglot.errors import ParseError
+from sqlglot.schema import MappingSchema
 
 import fakesnow.checks as checks
 import fakesnow.expr as expr
@@ -296,7 +297,23 @@ class FakeSnowflakeCursor:
         elif no_schema and not self._conn.schema_set:
             raise checks.no_current_schema_error(expr.key_command(expression))
 
+    def _columns(self, tables: set[tuple[str, str, str]]) -> MappingSchema:
+        """The duckdb column types of tables (catalog, db, name), unqualified parts defaulting to the session's."""
+        wanted = {(c or self._conn.database or "", d or self._conn.schema or "", n) for c, d, n in tables}
+        mapping: dict = {}
+        if wanted:
+            rows = self._duck_conn.execute(
+                "select table_catalog, table_schema, table_name, column_name, data_type "
+                "from information_schema.columns where (table_catalog, table_schema, table_name) in "
+                f"({', '.join('(?, ?, ?)' for _ in wanted)})",
+                [part for table in wanted for part in table],
+            ).fetchall()
+            for catalog, db, name, column, type_ in rows:
+                mapping.setdefault(catalog, {}).setdefault(db, {}).setdefault(name, {})[column] = type_
+        return MappingSchema(mapping, dialect="duckdb", normalize=False)
+
     def _transform(self, expression: Expr, params: MutableParams | None) -> Expr:
+        numeric = transforms.numeric_agg_args(expression, self._columns)
         return (
             expression.transform(lambda e: transforms.identifier(e, params), copy=False)
             .transform(tasks.task_statement, copy=False)
@@ -404,7 +421,7 @@ class FakeSnowflakeCursor:
             .transform(transforms.alias_in_join, copy=False)
             .transform(transforms.alias_in_where, copy=False)
             .transform(transforms.alter_table_strip_cluster_by, copy=False)
-            .transform(transforms.numeric_agg_implicit_cast, copy=False)
+            .transform(lambda e: transforms.numeric_agg_implicit_cast(e, numeric), copy=False)
             .transform(lambda e: transforms.create_stage(e, self._conn.database, self._conn.schema), copy=False)
             .transform(lambda e: transforms.create_file_format(e, self._conn.database, self._conn.schema), copy=False)
             .transform(

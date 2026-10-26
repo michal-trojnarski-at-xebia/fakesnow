@@ -1247,6 +1247,32 @@ def test_result_scan() -> None:
     )
 
 
+def test_numeric_agg_args() -> None:
+    from sqlglot.schema import MappingSchema
+
+    from fakesnow.transforms.transforms import numeric_agg_args, numeric_agg_implicit_cast
+
+    asked = []
+
+    def columns(tables: set[tuple[str, str, str]]) -> MappingSchema:
+        asked.append(tables)
+        return MappingSchema({"T": {"N": "DECIMAL(12,2)", "V": "VARCHAR"}}, dialect="duckdb", normalize=False)
+
+    expression = sqlglot.parse_one(
+        "WITH c AS (SELECT n, v FROM t) SELECT SUM(n), SUM(v), AVG(n + 1) FROM c", read="snowflake"
+    )
+    numeric = numeric_agg_args(expression, columns)
+
+    assert asked == [{("", "", "T")}]  # the CTE is not a table
+    assert (
+        expression.transform(lambda e: numeric_agg_implicit_cast(e, numeric), copy=False).sql()
+        == 'WITH c AS (SELECT n, v FROM t) SELECT SUM(n) AS "SUM(N)", SUM(TRY_CAST(v AS DOUBLE)) AS "SUM(V)", '
+        'AVG(n + 1) AS "AVG(N + 1)" FROM c'
+    )
+    # no aggregate, no lookup
+    assert numeric_agg_args(sqlglot.parse_one("SELECT n FROM t"), columns) == set() and len(asked) == 1
+
+
 def test_numeric_agg_implicit_cast() -> None:
     from fakesnow.transforms.transforms import numeric_agg_implicit_cast
 

@@ -130,6 +130,14 @@ def test_server_number_38_0_fetches_as_int64_when_it_fits(scur: snowflake.connec
     assert str(scur.fetch_pandas_all()["N"].dtype) == "int64"
 
 
+def test_server_sum_of_a_number_is_exact(scur: snowflake.connector.cursor.SnowflakeCursor) -> None:
+    scur.execute("create or replace table example (n number(12,2))")
+    scur.execute("insert into example values (1234.50), (-0.01), (100)")
+
+    scur.execute("select sum(n) from example")
+    assert scur.fetchall() == [(Decimal("1334.49"),)]
+
+
 def test_server_binding_named(server: dict) -> None:
     with snowflake.connector.connect(**server, database="DB1", schema="SCHEMA1") as conn:
         with conn.cursor() as cur:

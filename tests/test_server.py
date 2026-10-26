@@ -100,6 +100,14 @@ def test_server_binding_timestamp_ltz(server: dict) -> None:
         assert cur.fetchone() == (timestamp,)
 
 
+def test_server_null_timestamps(scur: snowflake.connector.cursor.SnowflakeCursor) -> None:
+    scur.execute("create or replace table example (ntz timestamp_ntz, tz timestamp_tz, ltz timestamp_ltz)")
+    scur.execute("insert into example values (null, null, null), ('2026-01-01 10:00:00', null, null)")
+
+    scur.execute("select * from example order by ntz nulls first")
+    assert scur.fetchall() == [(None, None, None), (datetime.datetime(2026, 1, 1, 10), None, None)]
+
+
 def test_server_binding_named(server: dict) -> None:
     with snowflake.connector.connect(**server, database="DB1", schema="SCHEMA1") as conn:
         with conn.cursor() as cur:
